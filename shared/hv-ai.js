@@ -174,7 +174,8 @@
   const hasAI = (c) => !!(c && (c.provider === "builtin" || (c.key && c.provider && c.provider !== "off")));
   async function callGemini(cfg, model, body, ms) {
     if (cfg.provider === "builtin") {
-      const r = await window.HVCloud.gemini(body, { models: model ? [model] : undefined, timeout: ms || 45000 });
+      const models = model ? [model, model === FALLBACK_GEMINI ? DEFAULT_GEMINI : FALLBACK_GEMINI] : undefined;   // the other model has its own per-minute limit
+      const r = await window.HVCloud.gemini(body, { models, timeout: ms || 45000, onWait: cfg.onWait });
       return { ok: r.ok, status: r.status, json: r.json || {}, builtinError: r.ok ? "" : r.error };
     }
     return post("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || DEFAULT_GEMINI) + ":generateContent?key=" + encodeURIComponent(cfg.key), body, null, ms);
@@ -258,7 +259,7 @@
     const tidy = (x) => (x && x.actions ? Object.assign({}, x, { actions: guard(x.actions.map(normalize), userText) }) : x);
     let r = tidy(await geminiActions(cfg, userText, context, history, model, scope));
     const usable = r.actions && r.actions.some((a) => validate(a).ok);
-    if (!cfg.model && (r.error || !usable) && r.status !== 400 && r.status !== 401 && r.status !== 403) {   // retry once on the stronger model
+    if (!cfg.model && (r.error || !usable) && [400, 401, 403, 429, 503].indexOf(r.status) < 0) {   // retry once on the stronger model (busy is already retried inside)
       const r2 = tidy(await geminiActions(cfg, userText, context, history, FALLBACK_GEMINI, scope));
       if (r2.actions && r2.actions.some((a) => validate(a).ok)) r = r2;
     }
@@ -775,7 +776,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       busy = true; send.disabled = true; const typing = add("hvai-typing", "HV AI is thinking…");
       let r;
-      try { r = await interpret(c, text, host.getContext(), history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
+      const cw = Object.assign({}, c, { onWait: () => { typing.textContent = "Lots of people are using HV AI right now. One moment…"; } });
+      try { r = await interpret(cw, text, host.getContext(), history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
       if (r.error) { say("sys", r.error === "NO_KEY" ? "Add your AI key in HV Vault > Settings > HV AI." : r.error, false); return; }
       const batch = { items: [] };
       const scope = scopeOf(host.app), all = (r.actions || []).slice(0, 12);

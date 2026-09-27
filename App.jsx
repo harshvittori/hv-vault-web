@@ -172,11 +172,13 @@ const PLATFORM_GUIDES = [
 /* ================================================================== */
 
 const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
-const todayISO = () => new Date().toISOString().slice(0, 10);
-const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+// Local calendar date (YYYY-MM-DD). toISOString() is UTC, which is still "yesterday" before 5:30 AM in India.
+const localISO = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+const todayISO = () => localISO(new Date());
+const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return localISO(d); };
 const daysBetween = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
 const fmtDate = (iso) => { if (!iso) return "—"; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }); };
-const weekKey = (iso) => { const d = new Date(iso + "T00:00:00"); const day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day); return d.toISOString().slice(0, 10); };
+const weekKey = (iso) => { const d = new Date(iso + "T00:00:00"); const day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day); return localISO(d); };
 const parseTags = (s) => (s || "").split(",").map((t) => t.trim()).filter(Boolean);
 
 function toCSV(rows, headers) {
@@ -2146,12 +2148,13 @@ function PipelinePage({ data, moveJob, companyName, openDetail, setModal }) {
      Speed ramps up the closer the pointer gets to the edge. */
   useEffect(() => {
     if (!dragId) { pointerX.current = null; return; }
-    const ZONE = 130, MAX_SPEED = 26;
+    const MAX_SPEED = 26;
     const step = () => {
       const el = boardRef.current;
       const x = pointerX.current;
       if (el && x !== null) {
         const r = el.getBoundingClientRect();
+        const ZONE = Math.min(130, r.width * 0.12);   // narrow phone screens get a slimmer edge zone
         if (x < r.left + ZONE) {
           const depth = (r.left + ZONE - x) / ZONE;
           el.scrollLeft -= Math.max(4, Math.round(depth * MAX_SPEED));
@@ -2166,9 +2169,97 @@ function PipelinePage({ data, moveJob, companyName, openDetail, setModal }) {
     return () => cancelAnimationFrame(rafRef.current);
   }, [dragId]);
 
+  /* Touch drag (phones): HTML5 drag-and-drop doesn't fire on touch screens.
+     Long-press a card to pick it up, drag it across columns (the board auto-scrolls
+     at the edges), release to drop. A quick swipe still scrolls; a tap still opens. */
+  const touch = useRef({});
+  const moveRef = useRef(moveJob);
+  moveRef.current = moveJob;
+  useEffect(() => {
+    const el = boardRef.current;
+    if (!el) return;
+    const HOLD = 350, SLOP = 10;
+    const t = touch.current;
+    const stageAt = (x, y) => { const n = document.elementFromPoint(x, y); const col = n && n.closest ? n.closest(".kanban-col") : null; return col ? col.getAttribute("data-stage") : null; };
+    const reset = () => {
+      clearTimeout(t.timer);
+      if (t.ghost) t.ghost.remove();
+      if (t.card) t.card.classList.remove("touch-pending");
+      const was = t.active;
+      Object.assign(t, { timer: null, ghost: null, card: null, id: null, active: false, stage: null });
+      pointerX.current = null;
+      if (was) { setDragId(null); setOver(null); }
+    };
+    const onStart = (e) => {
+      if (e.touches.length !== 1) return reset();
+      const card = e.target.closest ? e.target.closest(".kcard") : null;
+      if (!card) return;
+      const p = e.touches[0];
+      Object.assign(t, { card, id: card.getAttribute("data-id"), x0: p.clientX, y0: p.clientY, active: false });
+      card.classList.add("touch-pending");
+      t.timer = setTimeout(() => {
+        card.classList.remove("touch-pending");
+        card.style.transition = "none"; card.style.transform = "none";   // measure the card at rest, not mid "press" shrink
+        const r = card.getBoundingClientRect();
+        card.style.transition = card.style.transform = "";
+        const g = card.cloneNode(true);
+        g.classList.remove("touch-pending");
+        g.classList.add("kcard-ghost");
+        // The ghost lives on <body> (outside .app), so give it .app's theme variables, font and zoom.
+        const app = el.closest(".app"), cs = app ? getComputedStyle(app) : null;
+        const z = (cs && parseFloat(cs.zoom)) || 1;
+        if (cs) {
+          for (let i = 0; i < cs.length; i++) if (cs[i].startsWith("--")) g.style.setProperty(cs[i], cs.getPropertyValue(cs[i]));
+          Object.assign(g.style, { fontFamily: cs.fontFamily, fontSize: cs.fontSize, lineHeight: cs.lineHeight, color: cs.color, zoom: String(z) });
+        }
+        Object.assign(g.style, { width: r.width / z + "px", left: r.left / z + "px", top: r.top / z + "px" });
+        document.body.appendChild(g);
+        Object.assign(t, { ghost: g, z, dx: t.x0 - r.left, dy: t.y0 - r.top, active: true, stage: stageAt(t.x0, t.y0) });
+        try { navigator.vibrate && navigator.vibrate(15); } catch (err) {}
+        setDragId(t.id); setOver(t.stage);
+      }, HOLD);
+    };
+    const onMove = (e) => {
+      if (!t.card) return;
+      const p = e.touches[0];
+      if (!t.active) {                                   // moved before the hold finished: it's a scroll
+        if (Math.abs(p.clientX - t.x0) > SLOP || Math.abs(p.clientY - t.y0) > SLOP) reset();
+        return;
+      }
+      e.preventDefault();                                 // keep the page still while dragging
+      t.ghost.style.left = (p.clientX - t.dx) / t.z + "px";
+      t.ghost.style.top = (p.clientY - t.dy) / t.z + "px";
+      pointerX.current = p.clientX;
+      const st = stageAt(p.clientX, p.clientY);
+      if (st !== t.stage) { t.stage = st; setOver(st); }
+    };
+    const onEnd = (e) => {
+      if (!t.card) return;
+      if (t.active) {
+        e.preventDefault();                               // no click / detail drawer after a drop
+        if (t.stage) moveRef.current(t.id, t.stage);
+      }
+      reset();
+    };
+    const onMenu = (e) => { if (t.card) e.preventDefault(); };   // long-press must not open the context menu
+    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchmove", onMove, { passive: false });
+    el.addEventListener("touchend", onEnd, { passive: false });
+    el.addEventListener("touchcancel", reset);
+    el.addEventListener("contextmenu", onMenu);
+    return () => {
+      reset();
+      el.removeEventListener("touchstart", onStart);
+      el.removeEventListener("touchmove", onMove);
+      el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", reset);
+      el.removeEventListener("contextmenu", onMenu);
+    };
+  }, []);
+
   return (
     <div>
-      <PageHead title="Pipeline" sub="Drag cards between stages — moving to Applied auto-sets a follow-up. Tip: hover the board and use your mouse wheel to glide sideways."
+      <PageHead title="Pipeline" sub="Drag cards between stages (on a phone: press and hold a card, then drag) — moving to Applied auto-sets a follow-up. Tip: hover the board and use your mouse wheel to glide sideways."
         right={<button className="btn btn-primary" onClick={() => setModal({ type: "job" })}><Plus size={15} /> Add job</button>} />
       <div className="kanban" ref={boardRef}
         onDragOver={(e) => { pointerX.current = e.clientX; }}
@@ -2176,7 +2267,7 @@ function PipelinePage({ data, moveJob, companyName, openDetail, setModal }) {
         {STAGES.map((stage) => {
           const cards = data.jobs.filter((j) => j.status === stage);
           return (
-            <div key={stage} className={"kanban-col " + (over === stage ? "over" : "")}
+            <div key={stage} data-stage={stage} className={"kanban-col " + (over === stage ? "over" : "")}
               onDragOver={(e) => { e.preventDefault(); setOver(stage); }}
               onDragLeave={() => setOver(null)}
               onDrop={(e) => { e.preventDefault(); setOver(null); if (dragId) moveJob(dragId, stage); setDragId(null); }}>
@@ -2187,7 +2278,7 @@ function PipelinePage({ data, moveJob, companyName, openDetail, setModal }) {
                 {cards.map((j) => {
                   const na = jobNextAction(j, data.followups, today);
                   return (
-                    <div key={j.id} className={"kcard" + (dragId === j.id ? " dragging" : "")} draggable
+                    <div key={j.id} data-id={j.id} className={"kcard" + (dragId === j.id ? " dragging" : "")} draggable
                       onDragStart={() => setDragId(j.id)} onDragEnd={() => { setDragId(null); setOver(null); }}
                       onClick={() => openDetail(j.id)}>
                       <div className="kcard-title">{j.title}</div>
@@ -3900,6 +3991,15 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.4.0": {
+    title: "Your vault, on every device",
+    points: [
+      "Sign in with Google and your jobs, companies and resumes sync across your phone and laptop",
+      "Harsh Reset link in the sidebar, plus a 2-minute apply-rule check on each job",
+      "Dates are now your local date, so nothing shows as yesterday after midnight",
+      "Drag cards in the Pipeline on your phone: press and hold a card, then drag",
+    ],
+  },
   "2.3.0": {
     title: "A brand-new look",
     points: [
@@ -4622,6 +4722,9 @@ tr:hover td{background:var(--hover)}
 .kcard:hover{border-color:var(--accent);transform:translateY(-2px);box-shadow:var(--shadow-lg)}
 .kcard:active{cursor:grabbing}
 .kcard.dragging{opacity:.45;transform:rotate(1.5deg) scale(.98);border-style:dashed;border-color:var(--accent)}
+.kcard{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+.kcard.touch-pending{transform:scale(.97);transition:transform .35s ease}
+.kcard-ghost{position:fixed;z-index:9999;pointer-events:none;margin:0;opacity:.95;transform:rotate(2deg) scale(1.03);box-shadow:0 12px 30px rgba(20,30,50,.25)}
 .kcard-title{font-weight:600;font-size:13px;line-height:1.35}
 .kcard-company{font-size:12px;color:var(--slate2);margin-top:1px}
 .kcard-meta{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;font-size:11.5px}

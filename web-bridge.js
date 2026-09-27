@@ -412,7 +412,7 @@ if (typeof window !== "undefined" && !window.storage) {
         const { keys } = await window.storage.list("");
         const entries = {};
         for (const k of keys) { try { entries[k] = (await window.storage.get(k)).value; } catch (e) {} }
-        const name = "hv-vault-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+        const now = new Date(), name = "hv-vault-backup-" + now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0") + ".json";
         const blob = new Blob([JSON.stringify({ app: "hv-vault", version: 1, exportedAt: new Date().toISOString(), entries }, null, 2)], { type: "application/json" });
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob); a.download = name;

@@ -247,7 +247,7 @@ if (typeof window !== "undefined" && !window.storage) {
 
       let out = "";
       if (provider === "gemini") {
-        const m = (model || "gemini-2.5-flash").trim();
+        const m = (model || "gemini-3.5-flash").trim();
         const res = await fetchWithTimeout(
           "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(m) + ":generateContent?key=" + encodeURIComponent(apiKey),
           { method: "POST", headers: { "Content-Type": "application/json" },
@@ -315,7 +315,7 @@ if (typeof window !== "undefined" && !window.storage) {
 
       let out = "";
       if (provider === "gemini") {
-        const m = (model || "gemini-2.5-flash").trim();
+        const m = (model || "gemini-3.5-flash").trim();
         const parts = [{ text: prompt }];
         if (imageBase64) parts.push({ inline_data: { mime_type: imageMime || "image/png", data: imageBase64 } });
         const res = await fetchWithTimeout(
@@ -363,7 +363,7 @@ if (typeof window !== "undefined" && !window.storage) {
       const tiny = "Reply with exactly: OK";
       let res, j = {};
       if (provider === "gemini") {
-        const m = (model || "gemini-2.5-flash").trim();
+        const m = (model || "gemini-3.5-flash").trim();
         res = await fetchWithTimeout(
           "https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(m) + ":generateContent?key=" + encodeURIComponent(apiKey),
           { method: "POST", headers: { "Content-Type": "application/json" },
@@ -385,6 +385,59 @@ if (typeof window !== "undefined" && !window.storage) {
       return { error: e.message };
     }
   });
+  /* ---------- Resume parsing with the site's own Gemini (Firebase AI Logic) ----------
+     No user key: requests go to the Firebase project in firebase-config.js. The project
+     must have Firebase AI Logic enabled with the Gemini Developer API (free on Spark). */
+  const PROJECT_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];   // stable; second is a fallback if the first is unavailable
+  async function projectGemini(parts) {
+    const cfg = window.HV_FIREBASE_CONFIG;
+    if (!cfg || !cfg.apiKey || /PASTE/.test(cfg.apiKey)) return { error: "AI isn't set up for this site" };
+    let last = null;
+    for (const m of PROJECT_MODELS) {
+      const res = await fetchWithTimeout("https://firebasevertexai.googleapis.com/v1beta/projects/" + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey },
+        body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }),
+      });
+      let j = {};
+      try { j = await res.json(); } catch (e) {}
+      if (res.ok && !j.error) {
+        const c = j.candidates && j.candidates[0];
+        return { ok: true, text: c && c.content && c.content.parts ? c.content.parts.map((x) => x.text || "").join("") : "" };
+      }
+      last = { status: res.status, message: (j.error && j.error.message) || "" };
+      if (res.status !== 404) break;                                        // only a missing model falls through to the next one
+    }
+    if (last && last.status === 403 && /disabled|not been used/i.test(last.message)) return { error: "AI resume reading isn't switched on for this site yet", disabled: true };
+    if (last && last.status === 429) return { error: "AI is busy right now (rate limit) — try again in a minute" };
+    return { error: friendly(last ? last.status : 0, last && last.message) };
+  }
+  ipcMain.handle("hv:aiParseProject", async (_e, { text, pdfBase64 }) => {
+    try {
+      const t = String(text || "").trim();
+      if (!t && !pdfBase64) return { error: "No resume text to read" };
+      const prompt =
+        "Extract structured data from this resume. Respond with ONLY a valid JSON object using exactly these keys " +
+        "(all string values; empty string if not found): name, email, phone, linkedin, portfolio, location, target_role, " +
+        "skills, education, experience, projects, summary. 'target_role' is the person's current or target role/headline. " +
+        "'location' is the city/region they are based in. 'projects' should also include certifications. 'skills' must be a " +
+        "comma-separated string. Keep education/experience/projects as readable multi-line text. Do not invent anything." +
+        (t.length >= 200 ? "\n\nRESUME TEXT:\n" + t.slice(0, 20000) : "\n\nThe resume is attached as a PDF." + (t ? "\nExtracted text (may be partial):\n" + t : ""));
+      const parts = [{ text: prompt }];
+      if (t.length < 200 && pdfBase64) parts.push({ inlineData: { mimeType: "application/pdf", data: pdfBase64 } });   // scanned or image-only PDF
+      const r = await projectGemini(parts);
+      if (!r.ok) return r;
+      const clean = String(r.text).replace(/```json|```/g, "").trim();
+      const a = clean.indexOf("{"), b = clean.lastIndexOf("}");
+      if (a === -1 || b === -1) return { error: "AI reply was not in the expected format" };
+      try { return { ok: true, data: JSON.parse(clean.slice(a, b + 1)) }; }
+      catch (e) { return { error: "AI reply could not be read" }; }
+    } catch (e) {
+      if (e && e.name === "AbortError") return { error: "AI request timed out (45s) — check your internet and try again" };
+      return { error: (e && e.message) || "AI request failed" };
+    }
+  });
+
   const call = (ch) => (payload) => handlers[ch](null, payload || {});
 
   const pickFile = () => new Promise((resolve) => {
@@ -399,6 +452,7 @@ if (typeof window !== "undefined" && !window.storage) {
     isWeb: true,
     cloud: cloudApi,
     aiParse: call("hv:aiParse"),
+    aiParseProject: call("hv:aiParseProject"),
     aiExtract: call("hv:aiExtract"),
     aiTest: call("hv:aiTest"),
     getAppVersion: async () => WEB_VERSION,

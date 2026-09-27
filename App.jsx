@@ -630,6 +630,8 @@ export default function HVVault() {
   const [jobDetail, setJobDetail] = useState(null);
   const [preview, setPreview] = useState(null); // {name, url, mime}
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [setupLater, setSetupLater] = useState(false);
+  const [setupCelebrating, setSetupCelebrating] = useState(false);   // keep the setup open for its "all set" screen after saving
   const [whatsNew, setWhatsNew] = useState(null); // version string when update was just installed
   const versionChecked = useRef(false);
   const saveTimer = useRef(null);
@@ -767,6 +769,7 @@ export default function HVVault() {
   if (!data) return (<div className="app" data-theme="light"><StyleBlock /><Sky /><div className="loading-screen"><div className="loading-mark"><BrandMark size={52} /></div>Opening your vault…</div></div>);
 
   const theme = data.settings.theme || "light";
+  const needsProfile = IS_WEB() && !setupLater && (!data.profile || setupCelebrating);
   const toggleTheme = () => setData((d) => ({ ...d, settings: { ...d.settings, theme: theme === "light" ? "dark" : "light" } }));
 
   const pages = {
@@ -921,8 +924,9 @@ export default function HVVault() {
         </div>
       )}
 
-      {showOnboarding && <SetupWizard data={data} setData={setData} upsert={upsert} notify={notify} onClose={() => setShowOnboarding(false)} />}
-      {whatsNew && !showOnboarding && (
+      {needsProfile && <ProfileSetup data={data} setData={setData} upsert={upsert} notify={notify} onLater={() => setSetupLater(true)} onSaved={() => setSetupCelebrating(true)} />}
+      {showOnboarding && !IS_WEB() && <SetupWizard data={data} setData={setData} upsert={upsert} notify={notify} onClose={() => setShowOnboarding(false)} />}
+      {whatsNew && !showOnboarding && !needsProfile && (
         <WhatsNewModal version={whatsNew} onClose={() => {
           setData((d) => ({ ...d, settings: { ...d.settings, lastSeenVersion: whatsNew } }));
           setWhatsNew(null);
@@ -934,6 +938,249 @@ export default function HVVault() {
   );
 }
 
+
+/* Save a parsed/entered profile into the data: settings used across the app, the profile
+   record, and (optionally) a master-resume entry with the long sections. */
+function withProfile(d, f, addToMaster) {
+  const st = { ...d.settings };
+  if (f.name) st.myName = f.name;
+  if (f.target_role) st.targetRole = f.target_role;
+  if (f.location) st.locations = f.location;
+  if (f.linkedin) st.linkedin = f.linkedin;
+  if (f.portfolio) st.portfolio = f.portfolio;
+  if (f.skills) st.skills = f.skills;
+  let master = d.master;
+  if (addToMaster && (f.experience || f.education || f.projects || f.summary)) {
+    master = [...master, {
+      id: uid(), title: "My profile — " + (f.name || "imported"),
+      content: ["SUMMARY", f.summary || "—", "", "SKILLS", f.skills || "—", "", "EXPERIENCE", f.experience || "—", "", "EDUCATION", f.education || "—", "", "PROJECTS / CERTIFICATIONS", f.projects || "—"].join("\n"),
+    }];
+  }
+  return { ...d, settings: st, profile: { ...f, saved_at: todayISO() }, master };
+}
+
+/* ================================================================== */
+/* Profile setup (web): shown after Google sign-in until a profile exists.
+   One question per screen, or upload a resume and the site's own Gemini
+   (Firebase AI Logic) fills what it can; only missing fields are asked. */
+/* ================================================================== */
+const PS_STEPS = [
+  { k: "name", q: "First things first. What's your name?", ph: "Your full name", req: true },
+  { k: "target_role", q: "What role are you going after?", ph: "e.g. Growth Associate", req: true,
+    chips: ["Growth", "Founder's Office", "Business Development", "Partnerships", "GTM", "Revenue Ops", "Product", "Marketing"] },
+  { k: "location", q: "Where do you want to work?", ph: "e.g. Delhi NCR, Remote", multi: true,
+    chips: ["Delhi NCR", "Remote", "Bengaluru", "Pune", "Mumbai", "Hyderabad", "Jaipur"] },
+  { k: "email", q: "Which email do you use for applications?", ph: "you@example.com", type: "email" },
+  { k: "phone", q: "Your phone number?", ph: "+91 …", type: "tel", optional: true },
+  { k: "linkedin", q: "Your LinkedIn profile link?", ph: "linkedin.com/in/…", optional: true },
+  { k: "portfolio", q: "A portfolio or personal website?", ph: "https://…", optional: true },
+  { k: "skills", q: "What are your top skills?", ph: "Comma separated, e.g. SQL, outreach, Notion", optional: true },
+  { k: "summary", q: "In two lines, who are you professionally?", ph: "What you do and what you're great at", long: true, optional: true },
+  { k: "experience", q: "Your work experience", ph: "Company · role · dates · one line on what you did", long: true, optional: true },
+  { k: "education", q: "Your education", ph: "College · degree · year", long: true, optional: true },
+];
+const PS_LABEL = { name: "Name", target_role: "Target role", location: "Location", email: "Email", phone: "Phone", linkedin: "LinkedIn", portfolio: "Portfolio", skills: "Skills", summary: "Summary", experience: "Experience", education: "Education", projects: "Projects & certifications" };
+
+function ProfileSetup({ data, setData, upsert, notify, onLater, onSaved }) {
+  const cloudUser = (typeof window !== "undefined" && window.hv && window.hv.cloud && window.hv.cloud.user) || null;
+  const [phase, setPhase] = useState("welcome");          // welcome | upload | reading | ask | review | done
+  const [f, setF] = useState(() => ({ name: data.settings.myName || (cloudUser && cloudUser.name) || "", email: (cloudUser && cloudUser.email) || "" }));
+  const [queue, setQueue] = useState([]);
+  const [qi, setQi] = useState(0);
+  const [fromResume, setFromResume] = useState(null);     // { found, total, ai }
+  const [resumeRec, setResumeRec] = useState(null);
+  const [aiNote, setAiNote] = useState("");
+  const fileRef = useRef(null), inputRef = useRef(null);
+  const first = (f.name || (cloudUser && cloudUser.name) || "").trim().split(/\s+/)[0];
+
+  useEffect(() => { if (inputRef.current) inputRef.current.focus(); }, [phase, qi]);
+
+  const startManual = () => { setQueue(PS_STEPS); setQi(0); setFromResume(null); setPhase("ask"); };
+  const setVal = (k, v) => setF((x) => ({ ...x, [k]: v }));
+
+  const onFile = async (file) => {
+    if (!file) return;
+    if (!/\.(pdf|doc|docx)$/i.test(file.name)) return notify("Please upload a PDF or Word (.docx) file");
+    if (file.size > MAX_FILE_MB * 1024 * 1024) return notify("File too large — keep it under " + MAX_FILE_MB + " MB");
+    setPhase("reading");
+    try {
+      const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = () => rej(new Error("read failed")); r.readAsDataURL(file); });
+      const id = uid();
+      try { await window.storage.set(FILE_KEY(id), JSON.stringify({ name: file.name, mime: file.type || "application/octet-stream", data: b64 })); } catch (e) {}
+      const rec = {
+        id, title: file.name.replace(/\.(pdf|doc|docx)$/i, ""), file_name: file.name,
+        doc_type: "Resume", version: "", target_role: "", target_company: "", target_industry: "",
+        skills_highlighted: "", experience_highlighted: "", notes: "", tags: [],
+        status: "Active", is_master: true, has_file: true, uploaded_at: todayISO(), updated_at: todayISO(),
+      };
+      upsert("resumes", rec); setResumeRec(rec);
+      let text = "";
+      try { text = await extractResumeText(file); } catch (e) {}
+      const isPdf = /\.pdf$/i.test(file.name);
+      let parsed = localParseResume(text), ai = false, note = "";
+      const hv = window.hv || {};
+      if (hv.aiParseProject && (text.trim() || isPdf)) {
+        const r = await hv.aiParseProject({ text, pdfBase64: isPdf ? b64 : null });
+        if (r && r.ok && r.data) { PARSE_FIELDS.forEach((k) => { if (r.data[k]) parsed[k] = String(r.data[k]).trim(); }); ai = true; }
+        else note = (r && r.error) || "AI reading failed";
+      }
+      const st = data.settings;
+      if (!ai && st.aiProvider && st.aiProvider !== "off" && st.aiKey && text && hv.aiParse) {       // the user's own key, if they set one
+        const r = await hv.aiParse({ provider: st.aiProvider, apiKey: st.aiKey, model: st.aiModel || "", text });
+        if (r && r.ok && r.data) { PARSE_FIELDS.forEach((k) => { if (r.data[k]) parsed[k] = String(r.data[k]).trim(); }); ai = true; note = ""; }
+      }
+      const merged = { ...f };
+      PARSE_FIELDS.forEach((k) => { if (parsed[k] && String(parsed[k]).trim()) merged[k] = String(parsed[k]).trim(); });
+      const missing = PS_STEPS.filter((s) => !String(merged[s.k] || "").trim());
+      const found = PS_STEPS.length - missing.length;
+      setF(merged); setFromResume({ found, total: PS_STEPS.length, ai });
+      setAiNote(ai ? "" : (note ? note + " — used the basic reader instead." : "Used the basic reader."));
+      if (!text.trim() && !ai) notify("Couldn't read text from this file — let's fill it in together");
+      setQueue(missing); setQi(0); setPhase(missing.length ? "ask" : "review");
+    } catch (e) {
+      notify("Something went wrong reading that file — let's fill it in together");
+      startManual();
+    }
+  };
+
+  const step = queue[qi];
+  const val = step ? (f[step.k] || "") : "";
+  const canNext = step && (!step.req || String(val).trim());
+  const next = () => { if (!canNext) return; if (qi + 1 < queue.length) setQi(qi + 1); else setPhase("review"); };
+  const skip = () => { if (step) setVal(step.k, ""); if (qi + 1 < queue.length) setQi(qi + 1); else setPhase("review"); };
+  const back = () => { if (qi > 0) setQi(qi - 1); else setPhase(fromResume ? "upload" : "welcome"); };
+  const toggleChip = (c) => {
+    if (!step.multi) { setVal(step.k, c); return; }
+    const cur = String(val).split(",").map((x) => x.trim()).filter(Boolean);
+    setVal(step.k, (cur.includes(c) ? cur.filter((x) => x !== c) : [...cur, c]).join(", "));
+  };
+
+  const save = () => {
+    const clean = {};
+    Object.keys(f).forEach((k) => { if (String(f[k] || "").trim()) clean[k] = String(f[k]).trim(); });
+    setData((d) => withProfile(d, clean, true));
+    if (resumeRec) upsert("resumes", { ...resumeRec, parsed: { ...clean }, skills_highlighted: clean.skills || "", target_role: clean.target_role || "" });
+    onSaved(); setPhase("done");
+  };
+
+  const progress = phase === "ask" ? (qi + 1) / Math.max(queue.length, 1) : phase === "review" || phase === "done" ? 1 : 0;
+
+  return (
+    <div className="ps" role="dialog" aria-modal="true" aria-label="Set up your profile">
+      <div className="ps-hair"><i style={{ transform: "scaleX(" + progress + ")" }} /></div>
+      <div className="ps-card" key={phase + ":" + qi}>
+        {phase === "welcome" && (
+          <>
+            <div className="ps-eyebrow">{first ? "Welcome, " + first : "Welcome"}</div>
+            <h1 className="ps-q">Let's set up your profile.</h1>
+            <p className="ps-sub">It powers your greetings, templates and resume tailoring. About two minutes.</p>
+            <div className="ps-options">
+              <button className="ps-opt" onClick={() => setPhase("upload")}>
+                <span className="ps-opt-ico"><Sparkles size={20} /></span>
+                <strong>Upload my resume</strong>
+                <span>AI reads it and fills everything. You only answer what's missing.</span>
+              </button>
+              <button className="ps-opt" onClick={startManual}>
+                <span className="ps-opt-ico"><Pencil size={19} /></span>
+                <strong>Answer step by step</strong>
+                <span>A few quick questions, one at a time.</span>
+              </button>
+            </div>
+            <button className="ps-link" onClick={onLater}>I'll do it later</button>
+          </>
+        )}
+
+        {phase === "upload" && (
+          <>
+            <div className="ps-eyebrow">Fastest way</div>
+            <h1 className="ps-q">Drop in your resume.</h1>
+            <p className="ps-sub">We'll pull out your details and only ask about anything we can't find.</p>
+            <div className="ps-drop" onClick={() => fileRef.current && fileRef.current.click()}
+              onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); onFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}>
+              <Upload size={26} strokeWidth={1.6} />
+              <strong>Choose your resume</strong>
+              <span>PDF or Word · up to {MAX_FILE_MB} MB · LinkedIn "Save to PDF" works too</span>
+              <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" style={{ display: "none" }} onChange={(e) => { onFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
+            </div>
+            <div className="ps-row">
+              <button className="btn btn-ghost" onClick={() => setPhase("welcome")}>Back</button>
+              <button className="ps-link" onClick={startManual}>No resume? Answer step by step</button>
+            </div>
+          </>
+        )}
+
+        {phase === "reading" && (
+          <div className="ps-reading">
+            <div className="ps-orb" />
+            <h1 className="ps-q">Reading your resume…</h1>
+            <p className="ps-sub">Pulling out your name, role, skills and experience.</p>
+          </div>
+        )}
+
+        {phase === "ask" && step && (
+          <>
+            <div className="ps-eyebrow">
+              {fromResume ? (qi === 0 ? "Found " + fromResume.found + " of " + fromResume.total + " in your resume · a few left" : "Almost there") : "Step " + (qi + 1) + " of " + queue.length}
+            </div>
+            <h1 className="ps-q">{step.q}</h1>
+            {fromResume && qi === 0 && aiNote && <p className="ps-note">{aiNote}</p>}
+            {step.long
+              ? <textarea ref={inputRef} className="ps-input ps-area" value={val} placeholder={step.ph} rows={5} onChange={(e) => setVal(step.k, e.target.value)} />
+              : <input ref={inputRef} className="ps-input" type={step.type || "text"} value={val} placeholder={step.ph}
+                  onChange={(e) => setVal(step.k, e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); next(); } }} />}
+            {step.chips && (
+              <div className="ps-chips">
+                {step.chips.map((c) => {
+                  const on = step.multi ? String(val).split(",").map((x) => x.trim()).includes(c) : val === c;
+                  return <button key={c} className={"ps-chip" + (on ? " on" : "")} onClick={() => toggleChip(c)}>{c}</button>;
+                })}
+              </div>
+            )}
+            <div className="ps-row">
+              <button className="btn btn-ghost" onClick={back}>Back</button>
+              <span style={{ flex: 1 }} />
+              {step.optional && <button className="ps-link" onClick={skip}>Skip</button>}
+              <button className="btn btn-primary ps-next" disabled={!canNext} onClick={next}>{qi + 1 < queue.length ? "Continue" : "Review"}</button>
+            </div>
+          </>
+        )}
+
+        {phase === "review" && (
+          <>
+            <div className="ps-eyebrow">{fromResume && fromResume.ai ? "Filled with AI · check it over" : "Last step"}</div>
+            <h1 className="ps-q">Does this look right?</h1>
+            <div className="ps-review">
+              {[...PS_STEPS.map((x) => x.k), ...(f.projects ? ["projects"] : [])].map((k) => {
+                const long = ["summary", "experience", "education", "projects"].includes(k);
+                return (
+                  <label key={k} className={"ps-field" + (long ? " wide" : "")}>
+                    <span>{PS_LABEL[k]}</span>
+                    {long ? <textarea className="ps-input ps-sm" rows={3} value={f[k] || ""} onChange={(e) => setVal(k, e.target.value)} />
+                          : <input className="ps-input ps-sm" value={f[k] || ""} onChange={(e) => setVal(k, e.target.value)} />}
+                  </label>
+                );
+              })}
+            </div>
+            <div className="ps-row">
+              <button className="btn btn-ghost" onClick={() => { if (queue.length) { setQi(queue.length - 1); setPhase("ask"); } else setPhase(fromResume ? "upload" : "welcome"); }}>Back</button>
+              <span style={{ flex: 1 }} />
+              <button className="btn btn-primary ps-next" disabled={!String(f.name || "").trim()} onClick={save}>Save my profile</button>
+            </div>
+          </>
+        )}
+
+        {phase === "done" && (
+          <div className="ps-reading">
+            <div className="ps-orb done"><CheckCircle2 size={34} /></div>
+            <h1 className="ps-q">You're all set{first ? ", " + first : ""}.</h1>
+            <p className="ps-sub">Your profile is saved to your account. Let's find your next role.</p>
+            <button className="btn btn-primary ps-next" onClick={onLater}>Open my dashboard</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function SetupWizard({ data, setData, upsert, notify, onClose }) {
   const [step, setStep] = useState("choose"); // choose | ai | upload | review | manual
@@ -1014,23 +1261,7 @@ function SetupWizard({ data, setData, upsert, notify, onClose }) {
   const rerunAI = async () => { setBusy(true); const r = await runParse(raw); setF(r.parsed); setUsedAI(r.ai); setBusy(false); };
 
   const saveProfile = () => {
-    setData((d) => {
-      const st = { ...d.settings };
-      if (f.name) st.myName = f.name;
-      if (f.target_role) st.targetRole = f.target_role;
-      if (f.location) st.locations = f.location;
-      if (f.linkedin) st.linkedin = f.linkedin;
-      if (f.portfolio) st.portfolio = f.portfolio;
-      if (f.skills) st.skills = f.skills;
-      let master = d.master;
-      if (addToMaster && (f.experience || f.education || f.projects || f.summary)) {
-        master = [...master, {
-          id: uid(), title: "My profile — " + (f.name || "imported"),
-          content: ["SUMMARY", f.summary || "—", "", "SKILLS", f.skills || "—", "", "EXPERIENCE", f.experience || "—", "", "EDUCATION", f.education || "—", "", "PROJECTS / CERTIFICATIONS", f.projects || "—"].join("\n"),
-        }];
-      }
-      return { ...d, settings: st, profile: { ...f, saved_at: todayISO() }, master };
-    });
+    setData((d) => withProfile(d, f, addToMaster));
     if (uploadedResume) upsert("resumes", { ...uploadedResume, parsed: { ...f }, skills_highlighted: f.skills || "", target_role: f.target_role || "" });
     notify("Profile saved — welcome, " + (f.name ? f.name.split(" ")[0] : "aboard") + "! 🎉");
     onClose();
@@ -4034,6 +4265,14 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.6.0": {
+    title: "Guided profile setup",
+    points: [
+      "New accounts set up their profile one question at a time right after Google sign-in",
+      "Upload your resume and AI fills in your details; you only answer what's missing",
+      "Name and email come from your Google account, and you can review everything before saving",
+    ],
+  },
   "2.5.0": {
     title: "A new sunrise look",
     points: [
@@ -4438,7 +4677,7 @@ function SettingsPage({ data, setData, notify }) {
             </select>
           </Field>
           <Field label="API key"><input className="input" type="password" value={s.aiKey || ""} onChange={set("aiKey")} placeholder="Paste your own API key" /></Field>
-          <Field label="Model (optional)"><input className="input" value={s.aiModel || ""} onChange={set("aiModel")} placeholder={s.aiProvider === "openrouter" ? "default: google/gemini-2.0-flash-001" : "default: gemini-2.5-flash"} /></Field>
+          <Field label="Model (optional)"><input className="input" value={s.aiModel || ""} onChange={set("aiModel")} placeholder={s.aiProvider === "openrouter" ? "default: google/gemini-2.0-flash-001" : "default: gemini-3.5-flash"} /></Field>
         </div>
         <div className="btn-row" style={{ marginTop: 10, marginBottom: 6 }}>
           <button className="btn btn-ghost" onClick={async () => {
@@ -5173,6 +5412,64 @@ h1,h2,h3,.brand-name,.stat-value,.ac-title,.card-title{font-family:'Sora','Inter
 .hero-chip.gold svg{color:var(--gold)}
 
 .loading-screen{color:var(--slate);font-family:'Sora',sans-serif;font-weight:300;font-size:16px}
+
+/* profile setup */
+.ps{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:28px 16px;overflow-y:auto;
+  background:linear-gradient(180deg,color-mix(in srgb,var(--sky1) 72%,transparent),color-mix(in srgb,var(--sky3) 72%,transparent));
+  -webkit-backdrop-filter:blur(22px) saturate(150%);backdrop-filter:blur(22px) saturate(150%)}
+.ps-hair{position:fixed;top:0;left:0;right:0;height:3px;background:rgba(255,255,255,.12);z-index:81}
+.ps-hair i{display:block;height:100%;transform-origin:left;background:linear-gradient(90deg,var(--accent),var(--lav),var(--gold));transition:transform .8s cubic-bezier(.22,1,.36,1)}
+.ps-card{width:min(660px,100%);background:var(--glass-strong);border:1px solid var(--glass-border);border-radius:32px;padding:44px 42px 34px;
+  box-shadow:var(--shadow-lg),inset 0 1px 0 var(--glass-hi);animation:psIn .55s cubic-bezier(.22,1,.36,1) both}
+@keyframes psIn{from{opacity:0;transform:translateY(14px) scale(.985);filter:blur(4px)}to{opacity:1;transform:none;filter:none}}
+.ps-eyebrow{font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate2);font-weight:700;margin-bottom:12px}
+.ps-q{font-family:'Sora',sans-serif;font-weight:300;font-size:clamp(26px,3.4vw,40px);line-height:1.12;letter-spacing:-.025em;color:var(--text)}
+.ps-sub{color:var(--slate);font-size:16px;margin-top:12px}
+.ps-note{color:var(--amber);font-size:13.5px;margin-top:10px}
+.ps-options{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:28px 0 18px}
+.ps-opt{display:flex;flex-direction:column;align-items:flex-start;gap:8px;text-align:left;padding:22px 20px;border-radius:22px;border:1px solid var(--glass-border);
+  background:var(--card);color:var(--text);box-shadow:var(--shadow),inset 0 1px 0 var(--glass-hi);transition:transform .35s cubic-bezier(.22,1,.36,1),box-shadow .35s,border-color .25s}
+.ps-opt:hover{transform:translateY(-3px);border-color:color-mix(in srgb,var(--accent) 45%,var(--glass-border));box-shadow:var(--shadow-lg),inset 0 1px 0 var(--glass-hi)}
+.ps-opt strong{font-family:'Sora',sans-serif;font-weight:500;font-size:17px}
+.ps-opt span:last-child{color:var(--slate);font-size:14px;line-height:1.45}
+.ps-opt-ico{display:grid;place-items:center;width:42px;height:42px;border-radius:14px;background:var(--grad);color:#fff;box-shadow:0 10px 22px -10px rgba(79,102,224,.8)}
+.ps-link{background:none;border:0;color:var(--slate);font:inherit;font-size:14.5px;text-decoration:underline;text-underline-offset:3px;cursor:pointer;padding:6px 4px}
+.ps-link:hover{color:var(--text)}
+.ps-input{width:100%;margin-top:24px;font:inherit;font-size:19px;color:var(--text);background:var(--field);border:1px solid var(--glass-border);border-radius:18px;padding:16px 18px;outline:none;
+  box-shadow:inset 0 1px 2px rgba(20,30,60,.06);transition:border-color .2s,box-shadow .2s}
+.ps-input:focus{border-color:var(--accent);box-shadow:0 0 0 5px color-mix(in srgb,var(--accent) 16%,transparent)}
+.ps-area{resize:vertical;min-height:130px;line-height:1.5}
+.ps-chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.ps-chip{border:1px solid var(--glass-border);background:var(--card);color:var(--slate);border-radius:999px;padding:7px 14px;font:inherit;font-size:14px;cursor:pointer;transition:all .2s}
+.ps-chip:hover{color:var(--text)}
+.ps-chip.on{background:var(--grad);color:#fff;border-color:transparent}
+.ps-row{display:flex;align-items:center;gap:10px;margin-top:28px;flex-wrap:wrap}
+.ps-next{padding:12px 26px;font-size:15px}
+.ps-drop{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;margin-top:26px;padding:38px 20px;border-radius:24px;cursor:pointer;
+  border:1.5px dashed color-mix(in srgb,var(--accent) 45%,var(--glass-border));background:var(--card);color:var(--accent);transition:transform .3s cubic-bezier(.22,1,.36,1),background .2s}
+.ps-drop:hover{transform:translateY(-2px);background:var(--hover)}
+.ps-drop strong{font-family:'Sora',sans-serif;font-weight:500;font-size:18px;color:var(--text)}
+.ps-drop span{color:var(--slate);font-size:14px}
+.ps-reading{display:flex;flex-direction:column;align-items:center;text-align:center;gap:6px;padding:16px 0 6px}
+.ps-reading .btn{margin-top:22px}
+.ps-orb{width:84px;height:84px;border-radius:50%;margin-bottom:18px;background:conic-gradient(from 0deg,var(--accent),var(--lav),var(--gold),var(--accent));
+  -webkit-mask:radial-gradient(circle,transparent 52%,#000 54%);mask:radial-gradient(circle,transparent 52%,#000 54%);animation:psSpin 1.4s linear infinite}
+.ps-orb.done{-webkit-mask:none;mask:none;animation:psPop .6s cubic-bezier(.22,1,.36,1) both;display:grid;place-items:center;color:#fff;background:var(--grad);box-shadow:0 16px 36px -14px rgba(79,102,224,.9)}
+@keyframes psSpin{to{transform:rotate(360deg)}}
+@keyframes psPop{from{transform:scale(.6);opacity:0}to{transform:none;opacity:1}}
+.ps-review{display:grid;grid-template-columns:1fr 1fr;gap:12px 14px;margin-top:22px;max-height:52vh;overflow-y:auto;padding:2px 4px 2px 2px}
+.ps-field{display:flex;flex-direction:column;gap:5px}
+.ps-field.wide{grid-column:1/-1}
+.ps-field span{font-size:11.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--slate2);font-weight:700}
+.ps-input.ps-sm{margin-top:0;font-size:15.5px;padding:10px 13px;border-radius:12px}
+@media(max-width:640px){
+  .ps{padding:16px 12px;place-items:start center}
+  .ps-card{padding:30px 22px 24px;border-radius:26px;margin-top:18px}
+  .ps-options,.ps-review{grid-template-columns:1fr}
+  .ps-input{font-size:17px}
+  .ps-review{max-height:none}
+}
+@media (hover:none),(max-width:900px){ .ps{-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)} .ps-opt:hover,.ps-drop:hover{transform:none} }
 
 /* Phones and touch screens: blur is re-rendered every scroll frame, so repeated tiles use
    more opaque glass without blur, the sky stops drifting, and the sky is sized to the large

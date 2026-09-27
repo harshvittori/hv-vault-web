@@ -1,4 +1,4 @@
-/* Firebase web config shared by HV Vault and Harsh Reset (Firebase project: harsh-reset).
+/* Firebase web config shared by HV Vault and HV Reset (Firebase project: harsh-reset).
    These values are public by design; the Firestore security rules are what protect data.
    Paste apiKey and appId from: Firebase console > Project settings > General > Your apps > Web app. */
 window.HV_FIREBASE_CONFIG = {

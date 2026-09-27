@@ -1,4 +1,4 @@
-/* HV AI command test set: 25 commands (Hinglish, Hindi, English, voice-style run-ons, ambiguous
+/* HV AI command test set: 27 commands (Hinglish, Hindi, English, voice-style run-ons, ambiguous
    names, deletes, relative dates). Each check looks only at the parsed + validated + resolved
    actions; nothing is executed. Used by HV Vault > Settings > "HV AI self-test" with the user's
    own key, and by the Node tests. Fixed data and a fixed "now" make the expectations exact. */
@@ -30,7 +30,7 @@
   const mutating = (res) => res.filter((r) => r.action && ["answer", "askClarification"].indexOf(r.action.type) < 0);
   const lc = (s) => String(s || "").toLowerCase();
   const asks = (res) => of(res, "askClarification").length > 0;
-  const T = (cmd, lang, check) => ({ cmd, lang, check });
+  const T = (cmd, lang, check, app) => ({ cmd, lang, check, app });
   const pass = (c, why) => [!!c, why];
   const min = (hhmm) => { const m = /^(\d+):(\d+)$/.exec(hhmm || ""); return m ? +m[1] * 60 + +m[2] : NaN; };
 
@@ -93,14 +93,19 @@
       const b = p.action.args.blocks, at = (id, re) => b.find((x) => x.block_id === id || re.test(x.title));
       const apply = at("apply1", /application/i), prep = at("prep", /prep/i), end = Math.max.apply(null, b.map((x) => min(x.start) + x.duration_min));
       return pass(apply && prep && min(apply.start) >= 19 * 60 + 30 - 1 && min(prep.start) >= 19 * 60 + 30 && end <= 24 * 60 && b.some((x) => x.kind === "meal"), "applications + prep moved to 7:30 PM onwards, ends by midnight, a meal kept"); }),
+    // each app's HV AI changes only its own app
+    T("Cred wale ko applied mark karo", "Wrong app · in HV Reset", (r) => pass(!mutating(r).length && of(r, "answer").some((x) => /hv vault/i.test(x.action.args.text || "")), "changes nothing, says to do it in HV Vault"), "reset"),
+    T("Kal ka schedule bana do: subah 10 se 12 apply", "Wrong app · in HV Vault", (r) => pass(!mutating(r).length && of(r, "answer").some((x) => /hv reset/i.test(x.action.args.text || "")), "changes nothing, says to do it in HV Reset"), "vault"),
   ];
+  TESTS.forEach((t) => { t.app = t.app || (/plan/i.test(t.lang) ? "reset" : "vault"); });   // plan commands run in HV Reset, the rest in HV Vault
 
   /* run one command through the real model and the same prepare path the widget uses */
   async function runOne(HVAI, cfg, t) {
-    const ctx = HVAI.buildContext(DATA, PLAN, NOW);
-    const t0 = Date.now(); const r = await HVAI.interpret(cfg, t.cmd, ctx, []);   // interpret() already tidies times/kinds (normalize)
+    const ctx = HVAI.buildContext(DATA, t.app === "reset" ? PLAN : null, NOW);   // HV Vault has no day plan in its context
+    const t0 = Date.now(); const r = await HVAI.interpret(cfg, t.cmd, ctx, [], t.app);   // interpret() already tidies times/kinds (normalize)
     if (r.error) return { ok: false, why: r.error, actions: [], ms: Date.now() - t0 };
-    const res = (r.actions || []).map(HVAI.normalize).map((a) => {
+    const allowed = HVAI.scopeOf(t.app).allowed;                     // same filter as the chat: other-app actions are dropped
+    const res = (r.actions || []).filter((a) => a && allowed.indexOf(a.type) >= 0).map(HVAI.normalize).map((a) => {
       if ((a.type === "buildDayPlan" || a.type === "editDayPlan") && HVAI.validate(a).ok) {
         const f = HVAI.fixPlan(a.args.blocks, a.type === "editDayPlan" ? PLAN.blocks : null);
         return { status: "ready", action: { type: a.type, args: Object.assign({}, a.args, { blocks: f.blocks }) } };

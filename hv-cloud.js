@@ -1,4 +1,4 @@
-/* HVCloud: shared by HV Vault web and Harsh Reset.
+/* HVCloud: shared by HV Vault web and HV Reset.
    Google login (Firebase Auth) + per-user storage in Firestore.
    Every document lives under users/{uid}/..., and the security rules only let a
    signed-in user read or write their own uid. Both apps run on the same site

@@ -150,7 +150,7 @@ if (typeof window !== "undefined" && !window.storage) {
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pull(); });
   window.addEventListener("focus", () => pull());
-  /* ---------- Harsh Reset inbox ----------
+  /* ---------- HV Reset inbox ----------
      Reset appends actions (one field per action, a_<id>) to users/{uid}/apps/inbox, or to the
      same-browser localStorage "hv-inbox" when signed out. The app applies them to its own data
      (setInboxHandler), the result is pushed, then exactly the processed entries are removed, so

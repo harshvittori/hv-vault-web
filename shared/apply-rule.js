@@ -1,7 +1,7 @@
-/* The 2-minute apply rule: the single source for HV Vault and Harsh Reset.
+/* The 2-minute apply rule: the single source for HV Vault and HV Reset.
    The rule text and the check are both generated from RULE below, so they cannot disagree.
    HV Vault bundles this file (import "./shared/apply-rule.js"); the Pages build also copies it
-   to /hv-vault-web/shared/apply-rule.js, which Harsh Reset loads with a plain <script> tag.
+   to /hv-vault-web/shared/apply-rule.js, which HV Reset loads with a plain <script> tag.
    Plain browser script: no imports or exports; it defines window.HVApplyRule. */
 (function () {
   if (typeof window === "undefined" || window.HVApplyRule) return;

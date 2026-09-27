@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import pkg from "./package.json";
 import fs from "fs";
 
-// Harsh Reset loads these from /hv-vault-web/: HV Vault's cloud client, the shared apply rule and HV AI.
+// HV Reset loads these from /hv-vault-web/: HV Vault's cloud client, the shared apply rule and HV AI.
 const shareWithReset = () => ({
   name: "share-with-reset",
   closeBundle() {

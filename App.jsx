@@ -9,8 +9,8 @@ import {
   Tag as TagIcon, Moon, Sun, FileText, Star, BookOpen, ListTodo, MessageSquareText,
   Sparkles, Eye, Files, AlarmClock, CircleDot, GraduationCap, Zap, User, Wand2, Image as ImageIcon, CalendarDays, ChevronLeft, RotateCcw,
 } from "lucide-react";
-import "./shared/apply-rule.js";   // window.HVApplyRule: the 2-minute apply rule shared with Harsh Reset
-import "./shared/hv-ai.js";        // window.HVAI: the HV AI assistant shared with Harsh Reset
+import "./shared/apply-rule.js";   // window.HVApplyRule: the 2-minute apply rule shared with HV Reset
+import "./shared/hv-ai.js";        // window.HVAI: the HV AI assistant shared with HV Reset
 import "./shared/hv-ai-tests.js";  // window.HVAI_TESTS: HV AI command test set (Settings > self-test)
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
@@ -673,7 +673,7 @@ export default function HVVault() {
     })();
   }, []);
 
-  // Harsh Reset inbox: the sync engine hands over queued actions; apply them to the data, save, then it clears them.
+  // HV Reset inbox: the sync engine hands over queued actions; apply them to the data, save, then it clears them.
   const hasData = !!data;
 
   // HV AI: floating assistant. It only proposes; confirmed actions are applied here via applyAIActions.
@@ -692,7 +692,6 @@ export default function HVVault() {
       getContext: () => window.HVAI.buildContext(dataRef.current, null),
       userName: () => dataRef.current.settings.myName || "Harsh",
       isDark: () => dataRef.current.settings.theme === "dark",
-      planHandoff: (action) => "../harsh-reset/#hvplan=" + encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(action))))),
       execute: async (actions) => {
         const out = await commit((d) => applyAIActions(d, actions, todayISO()));
         return {
@@ -710,7 +709,7 @@ export default function HVVault() {
       const next = await new Promise((res) => setData((d) => { const n = applyInbox(d, actions); res(n); return n; }));
       await window.storage.set(STORAGE_KEY, JSON.stringify(next));
       const n = actions.filter((a) => a && (a.type === "log" || a.type === "applied")).length;
-      if (n) notify(n === 1 ? "Harsh Reset logged an application" : "Harsh Reset logged " + n + " applications");
+      if (n) notify(n === 1 ? "HV Reset logged an application" : "HV Reset logged " + n + " applications");
     });
     return () => cloud.setInboxHandler(null);
   }, [hasData]);
@@ -863,7 +862,7 @@ export default function HVVault() {
         {IS_WEB() && (
           <a className="nav-item" href="../harsh-reset/" style={{ textDecoration: "none", marginTop: 6 }}>
             <RotateCcw size={17} strokeWidth={1.75} />
-            <span>Harsh Reset</span>
+            <span>HV Reset</span>
           </a>
         )}
         <div className="sidebar-foot">Small actions compound.</div>
@@ -972,7 +971,7 @@ export default function HVVault() {
 
 
 /* Move a job to a stage (pure). Moving to Applied stamps the date and creates the first
-   follow-up. Used by moveJob and by actions from Harsh Reset (day = the local date it happened). */
+   follow-up. Used by moveJob and by actions from HV Reset (day = the local date it happened). */
 function stageJob(d, jobId, stage, day, via) {
   const job = d.jobs.find((j) => j.id === jobId);
   if (!job || job.status === stage) return d;
@@ -993,7 +992,7 @@ function stageJob(d, jobId, stage, day, via) {
   return { ...d, jobs: d.jobs.map((j) => (j.id === jobId ? updated : j)), followups };
 }
 
-/* ---- Harsh Reset inbox ----
+/* ---- HV Reset inbox ----
    Reset never writes HV Vault's data. It appends actions to users/{uid}/apps/inbox (or the
    same-browser localStorage "hv-inbox" when signed out); HV Vault applies them here and the
    sync engine clears them. Applied action ids are remembered, so an action can't apply twice. */
@@ -1005,7 +1004,7 @@ function applyInbox(d0, actions) {
   const seen = new Set(d0.settings.inboxDone || []);
   const aiUndo = { ...(d0.settings.aiUndo || {}) };
   let d = d0, applied = 0;
-  const toApplied = (dd, job, day) => (PRE_APPLY.includes(job.status) || !job.status ? stageJob(dd, job.id, "Applied", day, "from Harsh Reset") : dd);
+  const toApplied = (dd, job, day) => (PRE_APPLY.includes(job.status) || !job.status ? stageJob(dd, job.id, "Applied", day, "from HV Reset") : dd);
   for (const a of actions) {
     if (!a || !a.id || seen.has(a.id)) continue;
     seen.add(a.id);
@@ -1027,7 +1026,7 @@ function applyInbox(d0, actions) {
           companyId = uid();
           d = { ...d, companies: [...d.companies, {
             id: companyId, name: String(a.company || "Unknown company").trim(), website: "", career_page: "", linkedin: "", location: "", industry: "",
-            size: "", hiring_status: "Unknown", priority: "Medium", status: "To Research", tags: [], notes: "Added from Harsh Reset.",
+            size: "", hiring_status: "Unknown", priority: "Medium", status: "To Research", tags: [], notes: "Added from HV Reset.",
             contact_name: "", contact_email: "", recruiter_linkedin: "", last_checked_date: day, next_check_date: "", rating: "", created_at: day,
           }] };
         }
@@ -1035,11 +1034,11 @@ function applyInbox(d0, actions) {
         d = { ...d, jobs: [...d.jobs, {
           id, company_id: companyId, title: String(a.role || "Untitled role").trim(), source: a.source || "", job_link: a.link || "", location: "",
           work_mode: "", job_type: "Full-time", salary_range: "", experience_required: "", skills_required: "", description: "", deadline: "",
-          priority: "Medium", fit_score: "", excitement_score: "", status: "Saved", tags: [], notes: "Logged from Harsh Reset.",
+          priority: "Medium", fit_score: "", excitement_score: "", status: "Saved", tags: [], notes: "Logged from HV Reset.",
           date_saved: day, date_applied: "", interview_date: "", resume_id: "", cover_id: "", resume_attached_date: "", resume_verdict: "",
-          timeline: [{ date: day, event: "Job saved (Harsh Reset)" }], prep_done: [],
+          timeline: [{ date: day, event: "Job saved (HV Reset)" }], prep_done: [],
         }] };
-        d = stageJob(d, id, "Applied", day, "from Harsh Reset");
+        d = stageJob(d, id, "Applied", day, "from HV Reset");
       }
       applied++;
     } else if (a.type === "applied") {
@@ -1048,7 +1047,7 @@ function applyInbox(d0, actions) {
     } else if (a.type === "fu_done") {
       const f = d.followups.find((x) => x.id === a.followupId);
       if (f && f.status !== "Done") d = { ...d, followups: d.followups.map((x) => (x.id === f.id ? { ...x, status: "Done", sent_date: x.sent_date || day, completed_date: day } : x)) };
-    } else if (a.type === "ai" && Array.isArray(a.actions)) {        // HV AI batch confirmed in Harsh Reset
+    } else if (a.type === "ai" && Array.isArray(a.actions)) {        // HV AI batch confirmed in HV Reset
       const r = applyAIActions(d, a.actions, day);
       d = r.data; if (a.batch) aiUndo[a.batch] = r.undo;
     } else if (a.type === "ai_undo" && a.batch && aiUndo[a.batch]) {
@@ -2294,7 +2293,7 @@ function JobsPage({ data, setModal, remove, openDetail, companyName }) {
   );
 }
 
-/* Harsh Reset link. Reset lives on the same site (harshvittori.github.io/harsh-reset),
+/* HV Reset link. Reset lives on the same site (harshvittori.github.io/harsh-reset),
    so when it has been used in this browser its data is visible here. The apply rule
    below mirrors Reset's "2-minute apply rule" and only appears when Reset is present. */
 const HAS_RESET = () => { try { return IS_WEB() && (localStorage.getItem("harsh-reset-v1") !== null || localStorage.getItem("hv-reset-linked") === "1"); } catch (e) { return false; } };
@@ -4457,6 +4456,13 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.8.2": {
+    title: "Say hello to HV Reset",
+    points: [
+      "Harsh Reset is now HV Reset, with its own logo: a sunrise inside a reset arrow. Same app, same link, same data",
+      "In HV Reset, the HV AI button and chat now wear HV Reset's own glass look and follow its day and night sky",
+    ],
+  },
   "2.8.1": {
     title: "HV AI, polished",
     points: [
@@ -4468,16 +4474,16 @@ const APP_CHANGELOG = {
   "2.8.0": {
     title: "Meet HV AI",
     points: [
-      "HV AI, your assistant in HV Vault and Harsh Reset: tap the HV AI button, type or hold the mic, in Hindi, English or Hinglish",
+      "HV AI, your assistant in HV Vault and HV Reset: tap the HV AI button, type or hold the mic, in Hindi, English or Hinglish",
       "Add, update, move or delete jobs, set follow-ups and interviews, or ask what's pending. Try: \"Cred ko applied mark karo aur 5 din baad follow-up laga do\"",
       "Every change shows as a card first: Confirm, Edit or Cancel. Deletes always ask, unclear names get a question, and the last change can be undone",
-      "In Harsh Reset it also builds and edits your day plan, keeping meals and core blocks",
+      "In HV Reset it also builds and edits your day plan, keeping meals and core blocks",
     ],
   },
   "2.7.0": {
-    title: "HV Vault and Harsh Reset, one system",
+    title: "HV Vault and HV Reset, one system",
     points: [
-      "Log an application in Harsh Reset and it lands here as Applied, with its first follow-up",
+      "Log an application in HV Reset and it lands here as Applied, with its first follow-up",
       "Reset shows your saved jobs as an apply queue, sorted by the 2-minute apply rule",
       "Mark follow-ups done from Reset; its counter and weekly review read from HV Vault",
       "One apply rule for both apps, so the rule text and the check always agree",
@@ -4496,7 +4502,7 @@ const APP_CHANGELOG = {
     points: [
       "Liquid-glass design: a dawn sky in light mode, a starry pre-dawn night in dark mode",
       "Big, calm dashboard that greets you by time of day, with a fresh job-hunt line and your week's momentum",
-      "Larger numbers, roomier pages and pill buttons, matching Harsh Reset",
+      "Larger numbers, roomier pages and pill buttons, matching HV Reset",
       "Privacy and backup text updated to match Google sign-in and sync",
     ],
   },
@@ -4504,7 +4510,7 @@ const APP_CHANGELOG = {
     title: "Your vault, on every device",
     points: [
       "Sign in with Google and your jobs, companies and resumes sync across your phone and laptop",
-      "Harsh Reset link in the sidebar, plus a 2-minute apply-rule check on each job",
+      "HV Reset link in the sidebar, plus a 2-minute apply-rule check on each job",
       "Dates are now your local date, so nothing shows as yesterday after midnight",
       "Drag cards in the Pipeline on your phone: press and hold a card, then drag",
     ],
@@ -4577,7 +4583,7 @@ function WhatsNewModal({ version, onClose }) {
 }
 
 /* Cloud sync controls (web only). Sign in with Google once per device; everything then
-   stays in sync across phone and laptop, and with Harsh Reset on the same account. */
+   stays in sync across phone and laptop, and with HV Reset on the same account. */
 function useCloud() {
   const cloud = typeof window !== "undefined" && window.hv && window.hv.cloud;
   const [user, setUser] = useState(cloud ? cloud.user : null);
@@ -4601,7 +4607,7 @@ function CloudSyncCard({ notify }) {
         <p className="muted small">Cloud sync isn't set up for this site yet (firebase-config.js is empty). Your data is saved in this browser only.</p>
       ) : !user ? (
         <>
-          <p style={{ marginBottom: 10 }}>Sign in with Google to keep HV Vault the same on your phone and laptop, and connected to Harsh Reset. Your data goes to your own private space; nobody else can read it.</p>
+          <p style={{ marginBottom: 10 }}>Sign in with Google to keep HV Vault the same on your phone and laptop, and connected to HV Reset. Your data goes to your own private space; nobody else can read it.</p>
           <button className="btn btn-primary" onClick={signIn}>Sign in with Google</button>
         </>
       ) : (
@@ -5027,7 +5033,7 @@ function SettingsPage({ data, setData, notify }) {
        ~64px — it will blur. Do not use COMPACT above ~96px — it will
        look chunky instead of premium. */
 const HV_LOGO_SVG = '<svg viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="hvaimk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B3157"/><stop offset=".5" stop-color="#152647"/><stop offset="1" stop-color="#0C1830"/></linearGradient></defs><rect width="1024" height="1024" rx="230" fill="url(#hvaimk)"/><path d="M 608.00 360.68 A 179.2 179.2 0 1 1 416.00 360.68" fill="none" stroke="#DFC18A" stroke-width="96" stroke-linecap="round"/><path d="M 608.00 206.74 A 320 320 0 1 1 416.00 206.74" fill="none" stroke="#C9A45E" stroke-width="83.2" stroke-linecap="round"/><circle cx="512" cy="512" r="96" fill="#EAD9B0"/></svg>';
-const HVAI_KEY_HELP = "HV AI needs your AI key once. Open Settings > AI, choose Gemini, paste your key (free: aistudio.google.com > Get API key) and save. Harsh Reset then uses the same key automatically.";
+const HVAI_KEY_HELP = "HV AI needs your AI key once. Open Settings > AI, choose Gemini, paste your key (free: aistudio.google.com > Get API key) and save. HV Reset then uses the same key automatically.";
 
 function BrandMark({ size = 38 }) {
   const compact = size <= 52;

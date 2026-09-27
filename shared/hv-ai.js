@@ -1,7 +1,7 @@
-/* HV AI: one assistant for HV Vault and Harsh Reset.
+/* HV AI: one assistant for HV Vault and HV Reset.
    Plain browser script (no imports/exports) that defines window.HVAI. HV Vault bundles it
    (import "./shared/hv-ai.js"); the Pages build also publishes it at /hv-vault-web/shared/hv-ai.js
-   for Harsh Reset. The model only PROPOSES actions from a fixed list (function calling); every
+   for HV Reset. The model only PROPOSES actions from a fixed list (function calling); every
    action is validated, references are resolved against the app's data (ambiguity -> a question),
    shown as a card, and only the host app executes what the user confirms. */
 (function (root) {
@@ -110,10 +110,10 @@
       time: S("string", "HH:MM 24-hour India time, e.g. 16:00 for '4 baje' in the afternoon."), duration_min: S("integer", "Length in minutes if said."),
       type: S("string", "Event type.", { enum: EVENT_TYPES }), notes: S("string", "Notes."),
     }), required: ["title", "date"] }) },
-    { name: "buildDayPlan", description: "Make a new Harsh Reset schedule for a day from the user's instructions.", parameters: S("object", "", { properties: {
+    { name: "buildDayPlan", description: "Make a new HV Reset schedule for a day from the user's instructions.", parameters: S("object", "", { properties: {
       date: S("string", "YYYY-MM-DD."), blocks: S("array", "Blocks in time order.", { items: BLOCK }),
     }, required: ["date", "blocks"] }) },
-    { name: "editDayPlan", description: "Change the existing Harsh Reset plan in context.today_plan. Return the FULL new block list; keep block_id on blocks you keep.", parameters: S("object", "", { properties: {
+    { name: "editDayPlan", description: "Change the existing HV Reset plan in context.today_plan. Return the FULL new block list; keep block_id on blocks you keep.", parameters: S("object", "", { properties: {
       date: S("string", "YYYY-MM-DD."), blocks: S("array", "The full new list of blocks.", { items: BLOCK }),
     }, required: ["date", "blocks"] }) },
     { name: "answer", description: "Reply to the user in their language (Hinglish/Hindi/English), short. For questions, answer ONLY from context.stats and context lists. When you also propose actions, say what you are proposing, never that it is done.", parameters: S("object", "", { properties: {
@@ -124,7 +124,7 @@
     }, required: ["question"] }) },
   ];
   const SYSTEM = [
-    "You are HV AI, the assistant inside HV Vault (job-hunt CRM) and Harsh Reset (daily plan) for Harsh.",
+    "You are HV AI, the assistant inside HV Vault (job-hunt CRM) and HV Reset (daily plan) for Harsh.",
     "Reply in the language the user used (Hinglish, Hindi or English). Keep replies very short.",
     "You can only act through the provided functions. Always call at least one function. Always include one 'answer' call with a short reply, unless you call askClarification.",
     "Your calls are proposals: the app shows them to Harsh to confirm. Never say something is done or updated ('kar diya', 'ho gaya', 'done', 'updated' are wrong); say what will happen after he confirms, e.g. 'Ye raha naya plan, confirm karo.'",
@@ -132,9 +132,25 @@
     "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. In function arguments output dates as YYYY-MM-DD and times as HH:MM (24-hour). In any text Harsh reads (answer, askClarification) always write times in 12-hour format with AM/PM, e.g. 5:25 PM, never 17:25.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
-    "Day plans (Harsh Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' = a free block from 19:00. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
+    "Day plans (HV Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' = a free block from 19:00. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
     "Shifting the plan ('sab 7:30 PM se shuru karo', 'late ho gaya, baaki sab shift karo', 'push everything by 1 hour'): call editDayPlan with EVERY block of today_plan that is not done, in the same order, back to back from the new start (default: context.now rounded up to the next 15 minutes), keeping each block_id, title, kind and duration_min. Leave done blocks as they are. If it runs past midnight just keep counting (24:15, 24:45); the app fits it into the day.",
   ].join("\n");
+
+  /* ---------------- one assistant per app ----------------
+     Each app's HV AI only changes its own app. Shared data (applied counts, follow-ups due) still
+     syncs to both apps through the normal link; the assistant just can't reach across. */
+  const APPS = {
+    vault: { name: "HV Vault", actions: ["addJob", "updateJob", "moveStage", "deleteJob", "addFollowUp", "completeFollowUp", "addEvent", "answer", "askClarification"],
+      rule: "This chat is inside HV Vault. Here you may only change HV Vault: jobs, follow-ups and calendar events. You cannot make or change day plans here: if asked, call only 'answer' saying that day plans are made in HV Reset (open HV Reset and ask HV AI there)." },
+    reset: { name: "HV Reset", actions: ["buildDayPlan", "editDayPlan", "answer", "askClarification"],
+      rule: "This chat is inside HV Reset. Here you may only make or change the day plan. You cannot add, change, move or delete jobs, follow-ups or calendar events here: if asked, call only 'answer' saying that this is done in HV Vault (open HV Vault and ask HV AI there). You may still answer questions about jobs and follow-ups from the context." },
+  };
+  const scopeOf = (app) => {
+    const a = APPS[app];
+    if (!a) return { tools: TOOLS, system: SYSTEM, allowed: ACTIONS };
+    return { tools: TOOLS.filter((t) => a.actions.indexOf(t.name) >= 0), system: SYSTEM + "\n" + a.rule, allowed: a.actions, name: a.name };
+  };
+  const otherApp = (app, type) => { const o = Object.keys(APPS).find((k) => k !== app && APPS[k].actions.indexOf(type) >= 0); return o ? APPS[o].name : ""; };
 
   /* ---------------- provider calls ---------------- */
   const upperType = (s) => { if (!s || typeof s !== "object") return s; const o = Array.isArray(s) ? s.map(upperType) : {}; if (!Array.isArray(s)) for (const k in s) o[k] = k === "type" && typeof s[k] === "string" ? s[k].toUpperCase() : upperType(s[k]); return o; };   // only schema "type" strings; a property may itself be named "type"
@@ -157,12 +173,12 @@
     if (!r.status) return "Couldn't reach the AI (" + m + "). Check your internet.";
     return "AI error: " + (m || "HTTP " + r.status);
   };
-  async function geminiActions(cfg, userText, context, history, model) {
+  async function geminiActions(cfg, userText, context, history, model, scope) {
     const contents = (history || []).slice(-8).map((h) => ({ role: h.role === "user" ? "user" : "model", parts: [{ text: h.text }] }));
     contents.push({ role: "user", parts: [{ text: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nHARSH SAYS:\n" + userText }] });
     const r = await post("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(cfg.key), {
-      systemInstruction: { parts: [{ text: SYSTEM }] }, contents,
-      tools: [{ functionDeclarations: TOOLS.map((t) => ({ name: t.name, description: t.description, parameters: upperType(t.parameters) })) }],
+      systemInstruction: { parts: [{ text: scope.system }] }, contents,
+      tools: [{ functionDeclarations: scope.tools.map((t) => ({ name: t.name, description: t.description, parameters: upperType(t.parameters) })) }],
       toolConfig: { functionCallingConfig: { mode: "ANY" } }, generationConfig: { temperature: 0.1 },
     });
     if (!r.ok) return { error: friendlyErr(r), status: r.status };
@@ -172,12 +188,12 @@
     if (!calls.length && text) calls.push({ type: "answer", args: { text } });
     return { actions: calls };
   }
-  async function openrouterActions(cfg, userText, context, history, model) {
-    const messages = [{ role: "system", content: SYSTEM }].concat((history || []).slice(-8).map((h) => ({ role: h.role === "user" ? "user" : "assistant", content: h.text })));
+  async function openrouterActions(cfg, userText, context, history, model, scope) {
+    const messages = [{ role: "system", content: scope.system }].concat((history || []).slice(-8).map((h) => ({ role: h.role === "user" ? "user" : "assistant", content: h.text })));
     messages.push({ role: "user", content: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nHARSH SAYS:\n" + userText });
     const r = await post("https://openrouter.ai/api/v1/chat/completions", {
       model, messages, temperature: 0.1, tool_choice: "required",
-      tools: TOOLS.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
+      tools: scope.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
     }, { Authorization: "Bearer " + cfg.key });
     if (!r.ok) return { error: friendlyErr(r), status: r.status };
     const msg = (r.json.choices && r.json.choices[0] && r.json.choices[0].message) || {};
@@ -188,15 +204,16 @@
     }
     return { actions: calls };
   }
-  async function interpret(cfg, userText, context, history) {
+  async function interpret(cfg, userText, context, history, app) {
     if (!cfg || !cfg.key || !cfg.provider || cfg.provider === "off") return { error: "NO_KEY" };
-    if (cfg.provider === "openrouter") { const o = await openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR); return o && o.actions ? Object.assign({}, o, { actions: o.actions.map(normalize) }) : o; }
+    const scope = scopeOf(app);
+    if (cfg.provider === "openrouter") { const o = await openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR, scope); return o && o.actions ? Object.assign({}, o, { actions: o.actions.map(normalize) }) : o; }
     const model = cfg.model || DEFAULT_GEMINI;
     const tidy = (x) => (x && x.actions ? Object.assign({}, x, { actions: x.actions.map(normalize) }) : x);
-    let r = tidy(await geminiActions(cfg, userText, context, history, model));
+    let r = tidy(await geminiActions(cfg, userText, context, history, model, scope));
     const usable = r.actions && r.actions.some((a) => validate(a).ok);
     if (!cfg.model && (r.error || !usable) && r.status !== 400 && r.status !== 401 && r.status !== 403) {   // retry once on the stronger model
-      const r2 = tidy(await geminiActions(cfg, userText, context, history, FALLBACK_GEMINI));
+      const r2 = tidy(await geminiActions(cfg, userText, context, history, FALLBACK_GEMINI, scope));
       if (r2.actions && r2.actions.some((a) => validate(a).ok)) r = r2;
     }
     return r;
@@ -345,7 +362,7 @@
     return { status: "ready", action: { type: res.action.type, args: a } };
   }
 
-  /* ---------------- Harsh Reset plan rules ---------------- */
+  /* ---------------- HV Reset plan rules ---------------- */
   const MEALS = [{ name: "Lunch", from: 12 * 60 + 30, to: 15 * 60, at: 13 * 60 + 30, len: 30 }, { name: "Dinner", from: 19 * 60 + 30, to: 22 * 60, at: 20 * 60 + 30, len: 30 }];
   const JOIN = /\s+(?:and|aur|&|\+|then|phir)\s+/i;
   /* one block one task; core blocks shrink but never drop; never skip a meal. Returns { blocks, notes } */
@@ -611,7 +628,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         const d = describe(r.action, data);
         el.innerHTML = '<div class="hvai-ct">' + esc(d.icon + " " + d.title) + '</div><div class="hvai-cx">' + esc(d.text) + "</div>" + (d.sub ? '<div class="hvai-cs">' + esc(d.sub) + "</div>" : "") +
           (d.plan ? '<ol class="hvai-plan">' + d.plan.map((x) => "<li>" + esc(x) + "</li>").join("") + "</ol>" : "") +
-          '<div class="hvai-cs">Your day plan lives in Harsh Reset. Open it there to confirm.</div><div class="hvai-row"><a class="b p" style="text-decoration:none;display:inline-flex;align-items:center" href="' + esc(r.url) + '">Open in Harsh Reset</a><button class="b" data-a="cancel">Cancel</button></div>';
+          '<div class="hvai-cs">Your day plan lives in HV Reset. Open it there to confirm.</div><div class="hvai-row"><a class="b p" style="text-decoration:none;display:inline-flex;align-items:center" href="' + esc(r.url) + '">Open in HV Reset</a><button class="b" data-a="cancel">Cancel</button></div>';
         item.state = "handoff";
       } else if (r.status === "notfound" || r.status === "invalid") {
         el.innerHTML = '<div class="hvai-ct">Can\'t do this one</div><div class="hvai-cs">' + esc(r.message) + '</div>'; item.state = "skipped";
@@ -684,7 +701,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         const cur = action.type === "editDayPlan" && h.getPlan ? (h.getPlan() || {}).blocks : null;
         const f = fixPlan(action.args.blocks, cur && cur.map((b) => ({ id: b.id, start: b.start, duration_min: b.duration_min, title: b.title, kind: b.kind, core: b.core, done: b.done })));
         action = { type: action.type, args: Object.assign({}, action.args, { blocks: f.blocks, notes: f.notes }) };
-        if (!h.canPlan) return h.planHandoff ? { status: "handoff", action, url: h.planHandoff(action) } : { status: "notfound", action, message: "Day plans live in Harsh Reset. Open Reset and ask HV AI there." };
+        if (!h.canPlan) return h.planHandoff ? { status: "handoff", action, url: h.planHandoff(action) } : { status: "notfound", action, message: "Day plans live in HV Reset. Open Reset and ask HV AI there." };
         const v = validate({ type: action.type, args: { date: action.args.date, blocks: action.args.blocks } });
         return v.ok ? { status: "ready", action } : { status: "invalid", action, message: v.errors.join("; ") };
       }
@@ -699,18 +716,21 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (!c.key || !c.provider || c.provider === "off") { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > AI first.", false); return; }
       busy = true; send.disabled = true; const typing = add("hvai-typing", "HV AI is thinking…");
       let r;
-      try { r = await interpret(c, text, host.getContext(), history.slice(0, -1)); } finally { typing.remove(); busy = false; send.disabled = false; }
+      try { r = await interpret(c, text, host.getContext(), history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
       if (r.error) { say("sys", r.error === "NO_KEY" ? "Add your AI key in HV Vault > Settings > AI." : r.error, false); return; }
       const batch = { items: [] };
-      const acts = (r.actions || []).slice(0, 12);
-      acts.filter((a) => a.type === "answer" && a.args && str(a.args.text)).forEach((a) => say("ai", a.args.text));
+      const scope = scopeOf(host.app), all = (r.actions || []).slice(0, 12);
+      const acts = all.filter((a) => a && scope.allowed.indexOf(a.type) >= 0);     // this app's HV AI only changes this app
+      const away = all.filter((a) => a && acts.indexOf(a) < 0).map((a) => otherApp(host.app, a.type)).filter(Boolean);
+      if (away.length) say("ai", "Ye " + away[0] + " ka kaam hai. " + away[0] + " kholo aur wahan HV AI se bolo. Yahan kuch change nahi kiya.", false);
+      if (!away.length) acts.filter((a) => a.type === "answer" && a.args && str(a.args.text)).forEach((a) => say("ai", a.args.text));   // its reply would describe the other-app change
       acts.filter((a) => a.type === "askClarification" && a.args && str(a.args.question)).forEach((a) => {
         say("ai", a.args.question);
         const opts = Array.isArray(a.args.options) ? a.args.options.filter(str).slice(0, 5) : [];
         if (opts.length) { const row = add("hvai-row", opts.map((o) => '<button class="b">' + esc(o) + "</button>").join("")); row.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { row.remove(); run(b.textContent); })); }
       });
       acts.filter((a) => a.type !== "answer" && a.type !== "askClarification").forEach((a) => cardFor(prepare(a, host), batch));
-      if (!acts.length) say("ai", "Samjha nahi. Thoda aur batao?", false);
+      if (!acts.length && !away.length) say("ai", "Samjha nahi. Thoda aur batao?", false);
       footer(batch);
     }
 
@@ -769,5 +789,5 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     return { open, close, run, showActions, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
   }
 
-  root.HVAI = { version: 1, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
+  root.HVAI = { version: 1, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
 })(typeof window !== "undefined" ? window : globalThis);

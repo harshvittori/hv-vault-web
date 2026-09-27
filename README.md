@@ -14,7 +14,7 @@ A private job-hunt command center that runs in your browser. Track the jobs you 
 - **Follow-ups and calendar.** Every interview, follow-up and deadline in one place.
 - **Resume vault.** Upload PDF or Word resumes (up to 3.5 MB each), link them to applications and see which one gets responses.
 - **Analytics.** Charts for applications, responses and sources over time.
-- **Harsh Reset link.** If you use [Harsh Reset](https://harshvittori.github.io/harsh-reset/) in the same browser, the sidebar links to it and each job shows a 2-minute apply-rule check.
+- **HV Reset link.** If you use [HV Reset](https://harshvittori.github.io/harsh-reset/) in the same browser, the sidebar links to it and each job shows a 2-minute apply-rule check.
 
 | Pipeline | On a phone | Sign in |
 |---|---|---|

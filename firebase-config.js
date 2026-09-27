@@ -2,8 +2,8 @@
    These values are public by design; the Firestore security rules are what protect data.
    Paste apiKey and appId from: Firebase console > Project settings > General > Your apps > Web app. */
 window.HV_FIREBASE_CONFIG = {
-  apiKey: "PASTE_API_KEY",
+  apiKey: "AIzaSyDggasAVdqpvamkn1xeex2NmPUqG9JiZJ4",
   authDomain: "harsh-reset.firebaseapp.com",
   projectId: "harsh-reset",
-  appId: "PASTE_APP_ID",
+  appId: "1:592094409539:web:57d3aa494464b867bbf5f6",
 };

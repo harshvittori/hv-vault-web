@@ -3991,6 +3991,15 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.4.0": {
+    title: "Your vault, on every device",
+    points: [
+      "Sign in with Google and your jobs, companies and resumes sync across your phone and laptop",
+      "Harsh Reset link in the sidebar, plus a 2-minute apply-rule check on each job",
+      "Dates are now your local date, so nothing shows as yesterday after midnight",
+      "Drag cards in the Pipeline on your phone: press and hold a card, then drag",
+    ],
+  },
   "2.3.0": {
     title: "A brand-new look",
     points: [

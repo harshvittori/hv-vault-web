@@ -585,6 +585,11 @@ const Empty = ({ icon: Icon, title, hint, action }) => (
   </div>
 );
 
+/* Sunrise sky behind the glass: gradient, drifting orbs, horizon glow, stars in dark mode. */
+const Sky = () => (
+  <div className="hv-sky" aria-hidden="true"><i className="o1" /><i className="o2" /><i className="o3" /><i className="horizon" /><i className="stars" /></div>
+);
+
 const PageHead = ({ title, sub, right }) => (
   <div className="page-head">
     <div>
@@ -759,7 +764,7 @@ export default function HVVault() {
     } catch (e) { notify("No file stored for this entry"); }
   };
 
-  if (!data) return (<div className="app" data-theme="light"><StyleBlock /><div className="loading-screen"><div className="loading-mark"><BrandMark size={52} /></div>Opening your vault…</div></div>);
+  if (!data) return (<div className="app" data-theme="light"><StyleBlock /><Sky /><div className="loading-screen"><div className="loading-mark"><BrandMark size={52} /></div>Opening your vault…</div></div>);
 
   const theme = data.settings.theme || "light";
   const toggleTheme = () => setData((d) => ({ ...d, settings: { ...d.settings, theme: theme === "light" ? "dark" : "light" } }));
@@ -802,6 +807,7 @@ export default function HVVault() {
   return (
     <div className="app" data-theme={theme}>
       <StyleBlock />
+      <Sky />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><BrandMark size={38} /></div>
@@ -1099,7 +1105,7 @@ function SetupWizard({ data, setData, upsert, notify, onClose }) {
             onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); if (!busy) onFile(e.dataTransfer.files && e.dataTransfer.files[0]); }}>
             <Upload size={22} strokeWidth={1.6} />
             <div><strong>{busy ? "Reading your resume…" : "Drop your resume or LinkedIn PDF here"}</strong>{!busy && " or click to browse"}</div>
-            <div className="muted small">PDF, DOC, DOCX · up to {MAX_FILE_MB} MB · saved to your local vault</div>
+            <div className="muted small">PDF, DOC, DOCX · up to {MAX_FILE_MB} MB · saved to your vault</div>
             <input ref={fileRef} type="file" accept=".pdf,.doc,.docx" style={{ display: "none" }}
               onChange={(e) => { onFile(e.target.files && e.target.files[0]); e.target.value = ""; }} />
           </div>
@@ -1248,6 +1254,42 @@ function buildActions(data, today) {
   return actions.sort((a, b) => (order[a.tone] ?? 9) - (order[b.tone] ?? 9));
 }
 
+/* Dashboard hero: time-of-day greeting, a rotating job-hunt line, and this week's momentum. */
+const HERO_LINES = [
+  "You only need one yes. Every application is another shot at it.",
+  "Rejections are data, not verdicts. Adjust and send the next one.",
+  "Follow up today. Most people don't, and that's your edge.",
+  "One tailored application beats ten rushed ones.",
+  "Your next team is looking for someone like you right now.",
+  "Show up for twenty minutes. Momentum does the rest.",
+  "Small steps every day add up to an offer letter.",
+  "Talk to two humans today. Referrals open doors that portals don't.",
+];
+function DashHero({ name, sub, thisWeek, responseRate, inPlay }) {
+  const [i, setI] = useState(() => Math.floor(Math.random() * HERO_LINES.length));
+  const [fade, setFade] = useState(false);
+  useEffect(() => {
+    const t = setInterval(() => { setFade(true); setTimeout(() => { setI((x) => (x + 1) % HERO_LINES.length); setFade(false); }, 900); }, 10000);
+    return () => clearInterval(t);
+  }, []);
+  const now = new Date(), h = now.getHours();
+  const greet = h >= 5 && h < 12 ? "Good morning" : h >= 12 && h < 17 ? "Good afternoon" : h >= 17 && h < 22 ? "Good evening" : "Late-night grind";
+  const date = now.toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" });
+  return (
+    <section className="hero">
+      <div className="hero-date">{date}</div>
+      <h1>{greet}, <b>{name}</b>.</h1>
+      <p className="hero-sub">{sub}</p>
+      <p className={"hero-quote" + (fade ? " fade" : "")}>{HERO_LINES[i]}</p>
+      <div className="hero-chips">
+        <span className="hero-chip"><Zap size={15} /><strong>{thisWeek}</strong> applied this week</span>
+        <span className="hero-chip"><Star size={15} /><strong>{inPlay}</strong> in interviews</span>
+        <span className="hero-chip gold"><Sparkles size={15} /><strong>{responseRate}%</strong> response rate</span>
+      </div>
+    </section>
+  );
+}
+
 function Dashboard({ data, setPage, setModal, openJob, moveJob, upsert, snoozeItem, addNoteTo, notify }) {
   const { jobs, companies, followups, resumes } = data;
   const today = todayISO();
@@ -1303,7 +1345,8 @@ function Dashboard({ data, setPage, setModal, openJob, moveJob, upsert, snoozeIt
 
   return (
     <div>
-      <PageHead title={"Hi " + (data.settings.myName || "there") + " 👋"} sub={micro} />
+      <DashHero name={data.settings.myName || "there"} sub={micro} thisWeek={thisWeek} responseRate={responseRate}
+        inPlay={jobs.filter((j) => ["Interview", "Assignment", "Final Round"].includes(j.status)).length} />
 
       {/* Action Center */}
       <section className="action-center">
@@ -3503,7 +3546,7 @@ function AnalyticsPage({ data, setData, setModal, notify }) {
 
   return (
     <div>
-      <PageHead title="Analytics" sub={"Everything is calculated locally " + ON_DEVICE() + " — nothing leaves this device"}
+      <PageHead title="Analytics" sub={IS_WEB() ? "Calculated from your own data, which syncs privately to your Google account" : "Everything is calculated locally on your PC — nothing leaves this device"}
         right={<button className="btn btn-ghost" onClick={exportSummary}><Download size={14} /> Export Analytics</button>} />
 
       {/* Filters */}
@@ -3991,6 +4034,15 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.5.0": {
+    title: "A new sunrise look",
+    points: [
+      "Liquid-glass design: a dawn sky in light mode, a starry pre-dawn night in dark mode",
+      "Big, calm dashboard that greets you by time of day, with a fresh job-hunt line and your week's momentum",
+      "Larger numbers, roomier pages and pill buttons, matching Harsh Reset",
+      "Privacy and backup text updated to match Google sign-in and sync",
+    ],
+  },
   "2.4.0": {
     title: "Your vault, on every device",
     points: [
@@ -4353,7 +4405,7 @@ function SettingsPage({ data, setData, notify }) {
       <div className="card">
         <h3 className="card-title">Privacy — how your data is handled</h3>
         {(typeof window !== "undefined" && window.hv && window.hv.isWeb) ? (
-          <p className="muted small">No account, no server, no analytics, no tracking. Everything you enter is stored <strong>only in this browser, on this device</strong> — nobody else visiting this site can see it, including the site owner. The only time anything leaves your browser is if you enable optional AI parsing — then the text goes to the provider you chose, using your own key. <strong>Clearing browser data deletes it, and it does not sync to your other devices</strong> — so use Export below regularly.</p>
+          <p className="muted small">You sign in with Google, and everything you enter is saved to <strong>your own private space in Firebase</strong> (Cloud Firestore). Security rules let only your signed-in account read or write it. This browser keeps a working copy for speed, and signing out removes it; your data stays in your account. There is no analytics or tracking. The only other place anything goes is the AI provider you choose, if you turn on AI parsing, using your own key. Use Export below now and then for an extra backup.</p>
         ) : (
           <p className="muted small">HV Vault is a fully local app: no account, no cloud sync, no analytics, no tracking. Your data lives in <span className="mono">Documents\HV-Vault\data\hv-vault-data.json</span> and uploaded resumes in <span className="mono">Documents\HV-Vault\uploads\</span> on this PC. The only time anything leaves your computer is if you enable optional AI parsing — then the extracted resume text goes to the provider you chose, using your own key. Back up anytime with Export below.</p>
         )}
@@ -4403,7 +4455,7 @@ function SettingsPage({ data, setData, notify }) {
         </div>
         <p className="muted small"><strong>How it works:</strong> every uploaded resume is first read by the built-in local parser — fully offline, no key needed, always on. If you enable a provider here, the extracted text is additionally sent to that provider to get cleaner structured fields, and you review everything before saving.</p>
         <p className="muted small"><strong>Getting a key (both have free tiers):</strong> Gemini — sign in at aistudio.google.com and click "Get API key". OpenRouter — sign up at openrouter.ai and create a key under Keys. Paste it above and choose the matching provider.</p>
-        <p className="muted small"><strong>Privacy & cost:</strong> your key is stored only {IS_WEB() ? "in this browser" : "on this PC (inside your HV Vault data file)"} and is sent only to the provider you chose, only at the moment of parsing. API usage may be subject to the provider's rate limits and pricing. Without a key, the app works fully — AI is off by default.</p>
+        <p className="muted small"><strong>Privacy & cost:</strong> your key is saved {IS_WEB() ? "with your HV Vault data, which syncs privately to your Google account (only you can read it)," : "only on this PC (inside your HV Vault data file)"} and is sent only to the provider you chose, only at the moment of parsing. API usage may be subject to the provider's rate limits and pricing. Without a key, the app works fully — AI is off by default.</p>
       </div>
 
       <div className="card">
@@ -4443,7 +4495,7 @@ function SettingsPage({ data, setData, notify }) {
             }}><Upload size={14} /> Import / restore backup</button>
           </div>
           {(typeof window !== "undefined" && window.hv && window.hv.isWeb) ? (
-            <p className="muted small">Your data lives in this browser's storage. Export saves a <span className="mono">.json</span> file to your Downloads — import it on any other browser or device to move everything across. It is also compatible with the desktop app. The backup includes jobs, companies, follow-ups, resumes, profile, calendar events, and analytics preferences.</p>
+            <p className="muted small">Your data lives in your Google account, with a working copy in this browser. Export saves a <span className="mono">.json</span> file to your Downloads — import it on any other browser or device to move everything across. It is also compatible with the desktop app. The backup includes jobs, companies, follow-ups, resumes, profile, calendar events, and analytics preferences.</p>
           ) : (
             <p className="muted small">Data file: <span className="mono">Documents\HV-Vault\data\hv-vault-data.json</span> · Resume files: <span className="mono">Documents\HV-Vault\uploads\</span>. The backup includes everything — jobs, companies, follow-ups, resumes, profile, calendar events, and analytics preferences.</p>
           )}
@@ -4508,29 +4560,40 @@ function BrandMark({ size = 38 }) {
 function StyleBlock() {
   return (
     <style>{`
-@import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@200;300;400;500;600;700&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 .app{
-  --bg:#F6F7FA; --card:#FFFFFF; --line:#E6EAF1; --line2:#EDF0F5;
-  --text:#28313F; --slate:#5C6779; --slate2:#8B94A6;
-  --accent:#5B7CC4; --accent-deep:#47649F; --green:#3E9B72; --lav:#8E7FD0;
-  --amber:#D9A03D; --red:#CD6A6A; --teal:#4B9FAD;
-  --chart-grid:#E8ECF2; --shadow:0 1px 2px rgba(31,41,59,.05),0 4px 14px rgba(31,41,59,.05);
-  --shadow-lg:0 10px 34px rgba(31,41,59,.14); --focus:#5B7CC4;
-  --hover:#F1F4F9; --sidebar-bg:#FBFCFE;
-  --scroll-thumb:#CBD3DF; --scroll-thumb-hover:#A8B2C2; --scroll-track:rgba(20,30,50,.03);
+  /* Sunrise glass: light = dawn sky, dark = pre-dawn night. Surfaces are translucent glass. */
+  --sky1:#D9E3F4; --sky2:#E9E1F1; --sky3:#F8E4D2;
+  --orb1:#A9BCEB; --orb2:#F6C79A; --orb3:#B3DDD4; --horizon:rgba(255,190,110,.42); --stars:0;
+  --bg:rgba(255,255,255,.42); --card:rgba(255,255,255,.56); --glass-strong:rgba(250,251,255,.9); --field:rgba(255,255,255,.74);
+  --glass-border:rgba(255,255,255,.8); --glass-hi:rgba(255,255,255,.95); --overlay:rgba(22,28,52,.26);
+  --line:rgba(30,42,80,.11); --line2:rgba(30,42,80,.07);
+  --text:#16202E; --slate:#46516A; --slate2:#6F7A92;
+  --accent:#4058C8; --accent-deep:#3043A8; --green:#2E9A63; --lav:#7C63D6; --gold:#C98A1B;
+  --amber:#C98A1B; --red:#C85454; --teal:#2F8F9D;
+  --grad:linear-gradient(135deg,#4F66E0 0%,#7C5CE0 100%);
+  --chart-grid:rgba(30,42,80,.08); --shadow:0 12px 32px -14px rgba(40,50,90,.22),0 2px 6px rgba(40,50,90,.05);
+  --shadow-lg:0 30px 80px -24px rgba(40,50,80,.38); --focus:#4058C8;
+  --hover:rgba(255,255,255,.62); --sidebar-bg:rgba(255,255,255,.34);
+  --scroll-thumb:rgba(40,52,90,.22); --scroll-thumb-hover:rgba(40,52,90,.36); --scroll-track:rgba(40,52,90,.04);
 }
 .app[data-theme="dark"]{
-  --bg:#14171E; --card:#1E232E; --line:#333B4A; --line2:#2B3240;
-  --text:#F1F3F8; --slate:#C2CAD8; --slate2:#9BA5B7;
-  --accent:#8FA9E0; --accent-deep:#6E8FD4; --green:#5FBF93; --lav:#AD9FEA;
-  --amber:#EAB661; --red:#E48B8B; --teal:#6FBECB;
-  --chart-grid:#2E3644; --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 16px rgba(0,0,0,.26);
-  --shadow-lg:0 14px 40px rgba(0,0,0,.55); --hover:#28303D; --sidebar-bg:#191D26;
-  --scroll-thumb:#3D4759; --scroll-thumb-hover:#556484; --scroll-track:rgba(255,255,255,.035);
+  --sky1:#070C1A; --sky2:#141A38; --sky3:#2E2342;
+  --orb1:#3346A0; --orb2:#9A6440; --orb3:#1F6468; --horizon:rgba(242,164,90,.26); --stars:1;
+  --bg:rgba(255,255,255,.04); --card:rgba(255,255,255,.065); --glass-strong:rgba(17,21,42,.9); --field:rgba(8,12,26,.5);
+  --glass-border:rgba(255,255,255,.14); --glass-hi:rgba(255,255,255,.18); --overlay:rgba(2,4,12,.5);
+  --line:rgba(255,255,255,.11); --line2:rgba(255,255,255,.07);
+  --text:#EEF1F7; --slate:#C3CADB; --slate2:#98A2B8;
+  --accent:#A3B6FF; --accent-deep:#7F95F0; --green:#6FD6A0; --lav:#B9A6FF; --gold:#F2C063;
+  --amber:#F2B35E; --red:#F08A8A; --teal:#72C9D4;
+  --chart-grid:rgba(255,255,255,.08); --shadow:0 16px 40px -16px rgba(0,0,0,.6);
+  --shadow-lg:0 40px 90px -20px rgba(0,0,0,.65); --hover:rgba(255,255,255,.09); --sidebar-bg:rgba(8,12,28,.34);
+  --scroll-thumb:rgba(255,255,255,.18); --scroll-thumb-hover:rgba(255,255,255,.3); --scroll-track:rgba(255,255,255,.035);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;min-height:100vh;margin:0;padding:0;display:block;background:#F6F7FA}
+html,body{width:100%;min-height:100vh;margin:0;padding:0;display:block;background:#E6E3F0}
+body:has(.app[data-theme="dark"]){background:#0B1024}
 #root{width:100%;max-width:none;margin:0;padding:0;text-align:left}
 .app{display:flex;width:100%;min-height:100vh;background:var(--bg);color:var(--text);
   font-family:'Inter',system-ui,sans-serif;font-size:15.5px;line-height:1.55;zoom:1.08;
@@ -4997,6 +5060,128 @@ tr:hover td{background:var(--hover)}
 .loading-mark{display:flex;align-items:center;justify-content:center;animation:pulse 1.2s ease infinite}
 .loading-mark svg{border-radius:15px;box-shadow:var(--shadow-lg)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+
+/* ================= Sunrise glass theme ================= */
+.app{background:transparent;font-family:'Atkinson Hyperlegible','Inter',system-ui,sans-serif}
+h1,h2,h3,.brand-name,.stat-value,.ac-title,.card-title{font-family:'Sora','Inter',system-ui,sans-serif}
+.main,.loading-screen{position:relative}
+.sidebar,.main,.loading-screen{z-index:1}
+::selection{background:var(--accent);color:#fff}
+
+/* sky */
+.hv-sky{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;
+  background:linear-gradient(180deg,var(--sky1) 0%,var(--sky2) 56%,var(--sky3) 100%)}
+.hv-sky i{position:absolute;display:block;border-radius:50%;will-change:transform}
+.hv-sky .o1{width:72%;aspect-ratio:1;left:-22%;top:-38%;opacity:.8;background:radial-gradient(circle,var(--orb1) 0%,transparent 68%);animation:hvDrift1 80s ease-in-out infinite alternate}
+.hv-sky .o2{width:58%;aspect-ratio:1;right:-16%;bottom:-34%;opacity:.78;background:radial-gradient(circle,var(--orb2) 0%,transparent 68%);animation:hvDrift2 95s ease-in-out infinite alternate}
+.hv-sky .o3{width:40%;aspect-ratio:1;left:42%;top:22%;opacity:.45;background:radial-gradient(circle,var(--orb3) 0%,transparent 68%);animation:hvDrift3 120s ease-in-out infinite alternate}
+.hv-sky .horizon{left:-15%;right:-15%;bottom:-22%;height:46%;background:radial-gradient(ellipse at 50% 100%,var(--horizon) 0%,transparent 70%)}
+.hv-sky .stars{inset:0;border-radius:0;opacity:calc(var(--stars) * .55);background-image:
+  radial-gradient(1px 1px at 12% 18%,#fff 50%,transparent 51%),radial-gradient(1px 1px at 28% 8%,#fff 50%,transparent 51%),
+  radial-gradient(1.2px 1.2px at 44% 22%,#fff 50%,transparent 51%),radial-gradient(1px 1px at 63% 12%,#fff 50%,transparent 51%),
+  radial-gradient(1px 1px at 78% 26%,#fff 50%,transparent 51%),radial-gradient(1.3px 1.3px at 89% 9%,#fff 50%,transparent 51%),
+  radial-gradient(1px 1px at 7% 36%,#fff 50%,transparent 51%),radial-gradient(1px 1px at 55% 34%,#fff 50%,transparent 51%),
+  radial-gradient(1px 1px at 35% 44%,#fff 50%,transparent 51%),radial-gradient(1px 1px at 94% 40%,#fff 50%,transparent 51%),
+  radial-gradient(1px 1px at 20% 60%,#fff 50%,transparent 51%),radial-gradient(1.2px 1.2px at 70% 52%,#fff 50%,transparent 51%);
+  animation:hvTwinkle 9s ease-in-out infinite alternate}
+@keyframes hvDrift1{to{transform:translate3d(12%,10%,0) scale(1.1)}}
+@keyframes hvDrift2{to{transform:translate3d(-10%,-8%,0) scale(1.08)}}
+@keyframes hvDrift3{to{transform:translate3d(-18%,12%,0) scale(.9)}}
+@keyframes hvTwinkle{from{opacity:calc(var(--stars) * .3)}to{opacity:calc(var(--stars) * .6)}}
+
+/* glass surfaces */
+.sidebar,.topbar,.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.btn-ghost,.chip-btn,.stage-pill{
+  -webkit-backdrop-filter:blur(26px) saturate(165%);backdrop-filter:blur(26px) saturate(165%);
+  background-image:linear-gradient(140deg,rgba(255,255,255,.16) 0%,transparent 36%,transparent 74%,rgba(255,255,255,.05) 100%)}
+.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.kcard{
+  border-color:var(--glass-border);box-shadow:var(--shadow),inset 0 1px 0 var(--glass-hi)}
+.sidebar{border-right:1px solid var(--glass-border)}
+.topbar{background:var(--sidebar-bg);border-bottom:1px solid var(--glass-border)}
+.card,.action-center,.table-card{border-radius:24px}
+.card{padding:22px 24px}
+.action-center{padding:22px 24px;margin-bottom:28px}
+.action-center:before{width:4px;background:linear-gradient(180deg,var(--accent),var(--lav) 55%,var(--gold))}
+.card-title{font-size:15.5px;font-weight:600;letter-spacing:-.01em;margin-bottom:14px}
+.ac-title{font-weight:600;font-size:18px}
+.kanban-col{border-radius:22px}
+.kcard{border-radius:16px;padding:13px 14px;transition:transform .35s cubic-bezier(.22,1,.36,1),box-shadow .35s}
+.kcard:hover{transform:translateY(-2px);box-shadow:var(--shadow-lg),inset 0 1px 0 var(--glass-hi)}
+.kcard-ghost{background:var(--glass-strong)}
+.table-card th{background:transparent}
+
+/* big, airy layout */
+.content{padding:38px 46px 96px;max-width:1520px;margin:0 auto}
+.page-head{margin-bottom:28px;align-items:flex-end}
+.page-head h1{font-family:'Sora',sans-serif;font-weight:300;font-size:clamp(28px,2.6vw,40px);letter-spacing:-.025em;line-height:1.12}
+.page-sub{font-size:15.5px;color:var(--slate);margin-top:8px;max-width:880px}
+.stat-grid{grid-template-columns:repeat(auto-fill,minmax(152px,1fr));gap:14px;margin-bottom:22px}
+.stat{border-radius:22px;padding:22px 12px 18px;gap:8px;transition:transform .35s cubic-bezier(.22,1,.36,1),box-shadow .35s}
+.stat:not(:disabled):hover{transform:translateY(-3px);box-shadow:var(--shadow-lg),inset 0 1px 0 var(--glass-hi)}
+.stat-value{font-weight:200;font-size:42px;letter-spacing:-.03em;line-height:1}
+.stat-label{font-size:11px;letter-spacing:.13em;color:var(--slate2);font-weight:700}
+.stat,.stat:disabled{color:var(--text);cursor:default}
+.stat:not(:disabled){cursor:pointer}
+.btn{white-space:nowrap}
+
+/* brand + nav */
+.sidebar{width:236px}
+.brand{padding:26px 20px 20px}
+.brand-name{font-weight:600;font-size:17px;letter-spacing:-.01em}
+.brand-mark svg{border-radius:13px;box-shadow:0 10px 24px -10px rgba(40,50,90,.55)}
+.nav-item{border-radius:999px;padding:10px 15px;font-size:14.5px;margin-bottom:3px;transition:background .25s,color .25s,transform .3s cubic-bezier(.22,1,.36,1)}
+.nav-item:hover{transform:translateX(2px)}
+.nav-item.active,.app[data-theme="dark"] .nav-item.active{background:var(--grad);color:#fff;box-shadow:0 10px 24px -10px rgba(79,102,224,.8),inset 0 1px 0 rgba(255,255,255,.25)}
+
+/* controls */
+.btn{border-radius:999px;font-size:13.5px;padding:9px 18px;transition:transform .3s cubic-bezier(.22,1,.36,1),box-shadow .3s,background .25s,color .2s}
+.btn-sm{border-radius:999px;padding:6px 13px}
+.btn-primary{background:var(--grad);color:#fff;box-shadow:0 10px 24px -10px rgba(79,102,224,.8),inset 0 1px 0 rgba(255,255,255,.25)}
+.btn-primary:hover:not(:disabled){background:linear-gradient(135deg,#5A71EA 0%,#8A6BEA 100%);transform:translateY(-1px);box-shadow:0 14px 30px -10px rgba(79,102,224,.9),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn-ghost{background-color:var(--card);border-color:var(--glass-border);color:var(--text)}
+.btn-ghost:hover{background-color:var(--hover);transform:translateY(-1px)}
+.icon-btn{border-radius:999px}
+.theme-toggle{border-radius:999px!important;border-color:var(--glass-border)!important;background:var(--card)!important;width:38px;height:38px}
+.searchwrap{background:var(--field);border-color:var(--glass-border);border-radius:999px;padding:9px 16px}
+.input{background:var(--field);border-radius:12px;padding:9px 12px}
+.input:focus{border-color:var(--accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--accent) 18%,transparent)}
+.app[data-theme="dark"] select.input option{background:#141A30;color:#EEF1F7}
+.tagchip,.count-pill,.kanban-count{background:var(--hover)}
+
+/* overlays */
+.modal-overlay,.drawer-overlay{background:var(--overlay);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.modal{background:var(--glass-strong);border:1px solid var(--glass-border);border-radius:26px;box-shadow:var(--shadow-lg),inset 0 1px 0 var(--glass-hi);
+  -webkit-backdrop-filter:blur(30px) saturate(165%);backdrop-filter:blur(30px) saturate(165%)}
+.drawer{background:var(--glass-strong);border-left:1px solid var(--glass-border);-webkit-backdrop-filter:blur(30px) saturate(165%);backdrop-filter:blur(30px) saturate(165%)}
+.drawer-head{background:transparent}
+.recharts-default-tooltip{background:var(--glass-strong)!important;border:1px solid var(--glass-border)!important;border-radius:14px!important;-webkit-backdrop-filter:blur(16px);backdrop-filter:blur(16px)}
+
+/* dashboard hero */
+.hero{margin:6px 0 34px}
+.hero-date{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--slate2);font-weight:700;margin-bottom:12px}
+.hero h1{font-family:'Sora',sans-serif;font-weight:200;font-size:clamp(38px,4.8vw,66px);line-height:1.04;letter-spacing:-.035em}
+.hero h1 b{font-weight:500;background:linear-gradient(120deg,var(--accent) 0%,var(--lav) 55%,var(--gold) 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero-sub{font-size:16.5px;color:var(--slate);margin-top:14px}
+.hero-quote{font-family:'Sora',sans-serif;font-weight:300;font-size:clamp(16px,1.35vw,20px);color:var(--text);opacity:.82;margin-top:16px;min-height:1.5em;transition:opacity .9s ease,filter .9s ease}
+.hero-quote.fade{opacity:0;filter:blur(4px)}
+.hero-chips{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+.hero-chip{display:inline-flex;align-items:center;gap:8px;padding:9px 17px;border-radius:999px;font-size:14px;color:var(--slate);
+  background:var(--card);border:1px solid var(--glass-border);box-shadow:inset 0 1px 0 var(--glass-hi);
+  -webkit-backdrop-filter:blur(20px) saturate(150%);backdrop-filter:blur(20px) saturate(150%)}
+.hero-chip strong{font-family:'Sora',sans-serif;font-weight:500;font-size:15px;color:var(--text)}
+.hero-chip.gold strong{color:var(--gold)}
+.hero-chip svg{color:var(--accent)}
+.hero-chip.gold svg{color:var(--gold)}
+
+.loading-screen{color:var(--slate);font-family:'Sora',sans-serif;font-weight:300;font-size:16px}
+
+@media(max-width:640px){
+  .sidebar,.topbar,.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.btn-ghost,.chip-btn,.stage-pill,.hero-chip{
+    -webkit-backdrop-filter:blur(14px) saturate(150%);backdrop-filter:blur(14px) saturate(150%)}
+  .stat-value{font-size:34px}
+  .stat{padding:18px 10px 14px}
+  .hero{margin-bottom:26px}
+  .card,.action-center{padding:18px}
+}
 
 @media(max-width:900px){
   .app{flex-direction:column}

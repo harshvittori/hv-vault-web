@@ -1,7 +1,7 @@
 {
   "name": "hv-vault-web",
   "private": true,
-  "version": "2.4.0",
+  "version": "2.5.0",
   "type": "module",
   "scripts": { "build": "vite build" },
   "dependencies": {

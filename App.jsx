@@ -805,7 +805,7 @@ export default function HVVault() {
 
   const pages = {
     dashboard: <Dashboard data={data} setPage={setPage} setModal={setModal} openJob={setJobDetail} moveJob={moveJob} upsert={upsert} snoozeItem={snoozeItem} addNoteTo={addNoteTo} notify={notify} />,
-    profile: <ProfilePage data={data} setData={setData} notify={notify} />,
+    profile: <ProfilePage data={data} setData={setData} notify={notify} onStartSetup={IS_WEB() ? () => setSetupLater(false) : null} />,
     pipeline: <PipelinePage data={data} moveJob={moveJob} companyName={companyName} openDetail={setJobDetail} setModal={setModal} />,
     jobs: <JobsPage data={data} setModal={setModal} remove={remove} openDetail={setJobDetail} companyName={companyName} />,
     companies: <CompaniesPage data={data} setModal={setModal} remove={remove} openDetail={setCompanyDetail} notify={notify} />,
@@ -1601,7 +1601,7 @@ function SetupWizard({ data, setData, upsert, notify, onClose }) {
 
       {step === "manual" && (
         <div>
-          <p className="muted small" style={{ marginBottom: 12 }}>Just the basics — everything can be changed later in Settings.</p>
+          <p className="muted small" style={{ marginBottom: 12 }}>Just the basics — everything can be changed later on the Profile page.</p>
           <div className="form-grid">
             <Field label="Name"><input className="input" value={f.name || ""} onChange={set("name")} autoFocus /></Field>
             <Field label="Target role / headline"><input className="input" value={f.target_role || ""} onChange={set("target_role")} placeholder="e.g. Growth Marketing Associate" /></Field>
@@ -3328,7 +3328,7 @@ function ParseReviewModal({ payload, settings, onSave, onClose, notify }) {
 
   const rerunLocal = () => { setF({ ...localParseResume(raw) }); notify("Local parse re-run — review below"); };
   const rerunAI = async () => {
-    if (!(settings.aiProvider && settings.aiProvider !== "off" && settings.aiKey)) return notify("Enable an AI provider and add an API key in Settings first");
+    if (!(settings.aiProvider && settings.aiProvider !== "off" && settings.aiKey)) return notify("Enable an AI provider and add your key in Settings > HV AI first");
     if (!(typeof window !== "undefined" && window.hv && window.hv.aiParse)) return notify("AI parsing works in the desktop app");
     setBusy(true);
     const r = await window.hv.aiParse({ provider: settings.aiProvider, apiKey: settings.aiKey, model: settings.aiModel || "", text: raw });
@@ -3399,7 +3399,7 @@ function ParseReviewModal({ payload, settings, onSave, onClose, notify }) {
 /* Profile page                                                        */
 /* ================================================================== */
 
-function ProfilePage({ data, setData, notify }) {
+function ProfilePage({ data, setData, notify, onStartSetup }) {
   const p = data.profile;
   const s = data.settings;
   const [edit, setEdit] = useState(null);
@@ -3411,6 +3411,7 @@ function ProfilePage({ data, setData, notify }) {
     linkedin: s.linkedin || "", portfolio: s.portfolio || "", skills: s.skills || "",
     total_experience: "", summary: "", education: "", experience: "", projects: "",
     work_experience: [], internships: [],
+    remote_pref: s.remotePref || "Hybrid", expected_salary: s.expectedSalary || "", resume_link: s.resumeLink || "",
   });
 
   const saveProfile = (prof) => {
@@ -3422,6 +3423,9 @@ function ProfilePage({ data, setData, notify }) {
       if (prof.linkedin) st.linkedin = prof.linkedin;
       if (prof.portfolio) st.portfolio = prof.portfolio;
       if (prof.skills) st.skills = prof.skills;
+      if (prof.remote_pref !== undefined) st.remotePref = prof.remote_pref;          // job-search preferences live on the Profile page now
+      if (prof.expected_salary !== undefined) st.expectedSalary = prof.expected_salary;
+      if (prof.resume_link !== undefined) st.resumeLink = prof.resume_link;
       return { ...d, settings: st, profile: { ...prof, saved_at: todayISO() } };
     });
     notify("Profile saved ✓");
@@ -3440,7 +3444,19 @@ function ProfilePage({ data, setData, notify }) {
       const flat = localParseResume(text);
       let prof = { ...emptyProfile(), ...(p || {}) };
       PARSE_FIELDS.forEach((k) => { if (flat[k]) prof[k] = flat[k]; });
-      if (s.aiProvider && s.aiProvider !== "off" && s.aiKey && text.trim() && typeof window !== "undefined" && window.hv && window.hv.aiExtract) {
+      const hv = (typeof window !== "undefined" && window.hv) || {};
+      let siteAI = false;
+      if (hv.aiParseProject) {                                         // the site's built-in AI: no key needed
+        const isPdf = /\.pdf$/i.test(file.name);
+        let b64 = null;
+        if (isPdf && text.trim().length < 200) { try { b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(",")[1]); r.onerror = () => rej(new Error("read failed")); r.readAsDataURL(file); }); } catch (e) {} }
+        if (text.trim() || b64) {
+          notify("Reading your resume…");
+          const r = await hv.aiParseProject({ text, pdfBase64: b64 });
+          if (r && r.ok && r.data) { PARSE_FIELDS.forEach((k) => { if (r.data[k]) prof[k] = String(r.data[k]).trim(); }); siteAI = true; }
+        }
+      }
+      if (!siteAI && s.aiProvider && s.aiProvider !== "off" && s.aiKey && text.trim() && typeof window !== "undefined" && window.hv && window.hv.aiExtract) {
         notify("Asking AI to structure your profile…");
         const r = await window.hv.aiExtract({ provider: s.aiProvider, apiKey: s.aiKey, model: s.aiModel || "", kind: "profile", text, imageBase64: "", imageMime: "" });
         if (r && r.ok && r.data) {
@@ -3454,19 +3470,29 @@ function ProfilePage({ data, setData, notify }) {
     } finally { setBusy(false); }
   };
 
+  // no profile yet: open the guided setup (reads the resume with the site's AI); desktop falls back to the file picker
+  const createFromResume = () => (onStartSetup ? onStartSetup() : fileRef.current && fileRef.current.click());
+
   return (
     <div>
       <PageHead title="Profile" sub="Your career data — powers greetings, templates, and resume customization"
         right={<div className="btn-row">
-          <button className="btn btn-ghost" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}><Upload size={14} /> {busy ? "Reading…" : "Re-upload resume"}</button>
-          <button className="btn btn-primary" onClick={() => setEdit({ ...emptyProfile(), ...(p || {}) })}><Pencil size={14} /> {p ? "Update profile" : "Fill profile"}</button>
+          {p ? (<>
+            <button className="btn btn-ghost" disabled={busy} onClick={() => fileRef.current && fileRef.current.click()}><Upload size={14} /> {busy ? "Reading…" : "Re-upload resume"}</button>
+            <button className="btn btn-primary" onClick={() => setEdit({ ...emptyProfile(), ...(p || {}) })}><Pencil size={14} /> Update profile</button>
+          </>) : (
+            <button className="btn btn-primary" disabled={busy} onClick={createFromResume}><Plus size={14} /> Create profile</button>
+          )}
           <input ref={fileRef} type="file" accept=".pdf,.docx" style={{ display: "none" }} onChange={(e) => { reupload(e.target.files && e.target.files[0]); e.target.value = ""; }} />
         </div>} />
 
       {!p ? (
-        <Empty icon={User} title="No profile yet"
-          hint="Fill it manually, or re-upload your resume — with AI enabled you get structured work experience and internships automatically."
-          action={<button className="btn btn-primary" onClick={() => setEdit(emptyProfile())}><Plus size={14} /> Fill profile</button>} />
+        <Empty icon={User} title="Create your profile"
+          hint="Upload your resume and your profile is filled in automatically. Or answer a few quick questions instead. About two minutes."
+          action={<div className="btn-row" style={{ justifyContent: "center", marginTop: 8 }}>
+            <button className="btn btn-primary" disabled={busy} onClick={createFromResume}><Upload size={14} /> {busy ? "Reading…" : "Upload resume"}</button>
+            <button className="btn btn-ghost" onClick={() => setEdit(emptyProfile())}><Pencil size={14} /> Fill it in myself</button>
+          </div>} />
       ) : (
         <div>
           <div className="card profile-head">
@@ -3478,11 +3504,14 @@ function ProfilePage({ data, setData, notify }) {
                 {p.total_experience && <Badge color="#5B7CC4">{p.total_experience} experience</Badge>}
                 {p.location && <span className="tagchip">📍 {p.location}</span>}
                 {p.email && <span className="tagchip">✉ {p.email}</span>}
+                {s.remotePref && <span className="tagchip">🏢 {s.remotePref}</span>}
+                {s.expectedSalary && <span className="tagchip">💰 {s.expectedSalary}</span>}
                 {p.phone && <span className="tagchip">📞 {p.phone}</span>}
               </div>
               <div className="link-row" style={{ marginTop: 8, marginBottom: 0 }}>
                 {p.linkedin && <a className="text-link" href={p.linkedin.startsWith("http") ? p.linkedin : "https://" + p.linkedin} target="_blank" rel="noreferrer">LinkedIn ↗</a>}
                 {p.portfolio && <a className="text-link" href={p.portfolio.startsWith("http") ? p.portfolio : "https://" + p.portfolio} target="_blank" rel="noreferrer">Portfolio ↗</a>}
+                {s.resumeLink && <a className="text-link" href={s.resumeLink.startsWith("http") ? s.resumeLink : "https://" + s.resumeLink} target="_blank" rel="noreferrer">Resume ↗</a>}
               </div>
             </div>
           </div>
@@ -3527,7 +3556,7 @@ function ProfilePage({ data, setData, notify }) {
         </div>
       )}
 
-      {edit && <ProfileEditModal initial={edit} onSave={saveProfile} onClose={() => setEdit(null)} />}
+      {edit && <ProfileEditModal initial={{ remote_pref: s.remotePref || "Hybrid", expected_salary: s.expectedSalary || "", resume_link: s.resumeLink || "", ...edit }} onSave={saveProfile} onClose={() => setEdit(null)} />}
     </div>
   );
 }
@@ -3571,6 +3600,9 @@ function ProfileEditModal({ initial, onSave, onClose }) {
         <Field label="LinkedIn URL"><input className="input" value={f.linkedin || ""} onChange={set("linkedin")} /></Field>
         <Field label="Portfolio URL"><input className="input" value={f.portfolio || ""} onChange={set("portfolio")} /></Field>
         <Field label="Skills (comma separated)" span><input className="input" value={f.skills || ""} onChange={set("skills")} /></Field>
+        <Field label="Work mode preference"><select className="input" value={f.remote_pref || "Hybrid"} onChange={set("remote_pref")}>{WORK_MODES.map((m) => <option key={m}>{m}</option>)}</select></Field>
+        <Field label="Expected salary"><input className="input" value={f.expected_salary || ""} onChange={set("expected_salary")} placeholder="₹8–12 LPA" /></Field>
+        <Field label="Resume link (used as {resume_link} in templates)" span><input className="input" value={f.resume_link || ""} onChange={set("resume_link")} placeholder="Drive/Dropbox share link" /></Field>
         {renderRows("Work experience", "work_experience")}
         {renderRows("Internships", "internships")}
         <Field label="Summary" span><textarea className="input" rows={2} value={f.summary || ""} onChange={set("summary")} /></Field>
@@ -3624,7 +3656,7 @@ function AutofillModal({ kind, settings, notify, onClose, onExtract }) {
     toast("Screenshot added — click Extract");
   };
   const run = async () => {
-    if (!aiReady) return toast("Add your AI key in Settings first — AI is optional and off by default");
+    if (!aiReady) return toast("Add your key in Settings > HV AI first — AI is optional and off by default");
     if (!text.trim() && !img) return toast("Paste the JD, upload a PDF, or add a screenshot first");
     setBusy(true);
     const r = await window.hv.aiExtract({
@@ -3639,7 +3671,7 @@ function AutofillModal({ kind, settings, notify, onClose, onExtract }) {
   return (
     <Modal title={"Auto-fill " + (kind === "company" ? "company" : "job") + " with AI"} onClose={onClose}>
       {!aiReady && (
-        <p className="hint-strip"><Sparkles size={14} /><span>AI is currently off. Add your own Gemini/OpenRouter key in Settings to use auto-fill. Nothing is sent anywhere until you click Extract.</span></p>
+        <p className="hint-strip"><Sparkles size={14} /><span>AI is currently off. Add your own Gemini/OpenRouter key in Settings > HV AI to use auto-fill. Nothing is sent anywhere until you click Extract.</span></p>
       )}
       <div className="tabs" style={{ marginBottom: 12 }}>
         <button className={"tab " + (tab === "paste" ? "active" : "")} onClick={() => setTab("paste")}>Paste text</button>
@@ -4456,6 +4488,15 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.8.3": {
+    title: "A cleaner Profile and Settings",
+    points: [
+      "No profile yet? The Profile page now says \"Create your profile\": upload your resume to fill it in automatically, or answer a few quick questions",
+      "\"Re-upload resume\" appears only once your profile exists, and it now reads your resume with HV Vault's built-in AI (no key needed)",
+      "Name, target role, locations, skills, links, work mode, expected salary and resume link now live only on the Profile page",
+      "Settings has a simple HV AI card: paste one free Gemini key to turn the assistant on. On the website, About no longer shows an update button: the site updates itself",
+    ],
+  },
   "2.8.2": {
     title: "Say hello to HV Reset",
     points: [
@@ -4667,14 +4708,15 @@ function UpdatesCard() {
 
   return (
     <div className="card">
-      <h3 className="card-title">About & Updates</h3>
+      <h3 className="card-title">{IS_WEB() ? "About" : "About & Updates"}</h3>
       <p style={{ marginBottom: 10 }}>HV Vault <strong className="mono">v{ver || "—"}</strong>
         {st.phase === "available" || st.phase === "progress" || st.phase === "downloaded"
           ? <span className="muted"> → latest available: <strong className="mono">v{st.latest}</strong></span> : null}
       </p>
 
-      {st.phase === "idle" && (
-        <button className="btn btn-primary" onClick={check}><Download size={14} /> Check for Updates</button>
+      {st.phase === "idle" && (IS_WEB()
+        ? <p className="muted small"><CheckCircle2 size={14} style={{ verticalAlign: "-2px" }} /> The website updates itself: you always have the latest version.</p>
+        : <button className="btn btn-primary" onClick={check}><Download size={14} /> Check for Updates</button>
       )}
       {st.phase === "checking" && <p className="muted"><Clock size={13} style={{ verticalAlign: "-2px" }} /> Checking for updates…</p>}
       {st.phase === "latest" && (
@@ -4773,6 +4815,54 @@ function HVAISelfTest({ settings }) {
               <div className="muted mono" style={{ fontSize: 11.5 }}>{(r.actions || []).map((a) => a.action.type + "(" + a.status + ")" + (a.action.args ? " " + JSON.stringify(a.action.args).slice(0, 160) : "")).join(" ; ")}</div>
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* HV AI key. Resume reading uses the site's built-in AI (web) and needs nothing here;
+   this key is only for the HV AI assistant in HV Vault and HV Reset. */
+function HVAIKeyCard({ s, set, setData, notify }) {
+  const [adv, setAdv] = useState(false);
+  const web = IS_WEB();
+  const on = !!(s.aiKey && s.aiProvider && s.aiProvider !== "off");
+  const test = async () => {
+    if (!(typeof window !== "undefined" && window.hv && window.hv.aiTest)) return notify("Testing isn't available here");
+    if (!on) return notify("Paste your key first");
+    notify("Checking your key…");
+    const r = await window.hv.aiTest({ provider: s.aiProvider, apiKey: s.aiKey, model: s.aiModel || "" });
+    notify(r && r.ok ? "✓ Key works. HV AI is ready" : "✕ " + ((r && r.error) || "That key didn't work"));
+  };
+  const setKey = (e) => { const v = e.target.value; setData((d) => ({ ...d, settings: { ...d.settings, aiKey: v, aiProvider: v && (!d.settings.aiProvider || d.settings.aiProvider === "off") ? "gemini" : d.settings.aiProvider } })); };
+  return (
+    <div className="card">
+      <h3 className="card-title">HV AI</h3>
+      <p style={{ marginBottom: 12 }}>
+        <span className={on ? "good-text" : "muted"}>{on ? <><CheckCircle2 size={14} style={{ verticalAlign: "-2px" }} /> HV AI is on</> : "HV AI is off: add a free key to turn it on"}</span>
+      </p>
+      <div className="form-grid">
+        <Field label="Your Gemini key"><input className="input" type="password" value={s.aiKey || ""} onChange={setKey} placeholder="Paste your key (free from aistudio.google.com)" /></Field>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 8, flexWrap: "wrap" }}>
+          <button className="btn btn-ghost" onClick={test}>Test key</button>
+          {on && <button className="btn btn-ghost" onClick={() => { setData((d) => ({ ...d, settings: { ...d.settings, aiKey: "", aiProvider: "off" } })); notify("Key removed. HV AI is off"); }}>Remove key</button>}
+        </div>
+      </div>
+      <p className="muted small" style={{ marginTop: 10 }}>
+        The key powers the HV AI assistant here and in HV Reset. {web ? "Reading your resume doesn't need it: that uses HV Vault's built-in AI. " : ""}
+        Get one free: open <strong>aistudio.google.com</strong>, sign in, tap <strong>Get API key</strong>, copy it and paste it above. {web ? "It's saved privately with your account." : "It's saved only on this PC."}
+      </p>
+      <button className="btn btn-ghost btn-sm" style={{ marginTop: 4 }} onClick={() => setAdv((x) => !x)}>{adv ? "Hide advanced" : "Advanced"}</button>
+      {adv && (
+        <div className="form-grid" style={{ marginTop: 10 }}>
+          <Field label="Provider">
+            <select className="input" value={s.aiProvider || "off"} onChange={set("aiProvider")}>
+              <option value="off">Off</option>
+              <option value="gemini">Gemini (Google)</option>
+              <option value="openrouter">OpenRouter</option>
+            </select>
+          </Field>
+          <Field label="Model (optional)"><input className="input" value={s.aiModel || ""} onChange={set("aiModel")} placeholder={s.aiProvider === "openrouter" ? "leave empty for the default" : "leave empty for the default"} /></Field>
         </div>
       )}
     </div>
@@ -4915,51 +5005,14 @@ function SettingsPage({ data, setData, notify }) {
       </div>
 
       <div className="card">
-        <h3 className="card-title">Job search preferences</h3>
+        <h3 className="card-title">Follow-ups</h3>
         <div className="form-grid">
-          <Field label="Your name (used in templates as {my_name})"><input className="input" value={s.myName} onChange={set("myName")} /></Field>
-          <Field label="Target role"><input className="input" value={s.targetRole} onChange={set("targetRole")} /></Field>
-          <Field label="Preferred locations"><input className="input" value={s.locations} onChange={set("locations")} /></Field>
-          <Field label="Work mode preference"><select className="input" value={s.remotePref} onChange={set("remotePref")}>{WORK_MODES.map((m) => <option key={m}>{m}</option>)}</select></Field>
-          <Field label="Expected salary"><input className="input" value={s.expectedSalary} onChange={set("expectedSalary")} placeholder="₹8–12 LPA" /></Field>
           <Field label="Default follow-up gap (days)"><input className="input" type="number" min="1" max="30" value={s.followupGap} onChange={set("followupGap")} /></Field>
-          <Field label="Key skills"><input className="input" value={s.skills} onChange={set("skills")} /></Field>
-          <Field label="LinkedIn URL"><input className="input" value={s.linkedin} onChange={set("linkedin")} /></Field>
-          <Field label="Portfolio URL"><input className="input" value={s.portfolio} onChange={set("portfolio")} /></Field>
-          <Field label="Resume link (used as {resume_link})"><input className="input" value={s.resumeLink} onChange={set("resumeLink")} placeholder="Drive/Dropbox share link" /></Field>
         </div>
+        <p className="muted small">Your name, target role, locations, skills and links now live on the Profile page.</p>
       </div>
 
-      <div className="card">
-        <h3 className="card-title">AI resume parsing (optional)</h3>
-        <div className="form-grid">
-          <Field label="AI provider">
-            <select className="input" value={s.aiProvider || "off"} onChange={set("aiProvider")}>
-              <option value="off">Off — local parser only</option>
-              <option value="gemini">Gemini API (Google)</option>
-              <option value="openrouter">OpenRouter API</option>
-            </select>
-          </Field>
-          <Field label="API key"><input className="input" type="password" value={s.aiKey || ""} onChange={set("aiKey")} placeholder="Paste your own API key" /></Field>
-          <Field label="Model (optional)"><input className="input" value={s.aiModel || ""} onChange={set("aiModel")} placeholder={s.aiProvider === "openrouter" ? "default: google/gemini-2.0-flash-001" : "default: gemini-3.5-flash"} /></Field>
-        </div>
-        <div className="btn-row" style={{ marginTop: 10, marginBottom: 6 }}>
-          <button className="btn btn-ghost" onClick={async () => {
-            if (!(typeof window !== "undefined" && window.hv && window.hv.aiTest)) return notify("Connection testing works in the desktop app");
-            if (!s.aiKey || s.aiProvider === "off") return notify("Choose a provider and paste a key first");
-            notify("Testing connection…");
-            const r = await window.hv.aiTest({ provider: s.aiProvider, apiKey: s.aiKey, model: s.aiModel || "" });
-            notify(r && r.ok ? "✓ Connected — AI parsing is ready" : "✕ " + ((r && r.error) || "Connection failed"));
-          }}>Test connection</button>
-          <button className="btn btn-ghost" onClick={() => {
-            setData((d) => ({ ...d, settings: { ...d.settings, aiKey: "", aiProvider: "off" } }));
-            notify("API key cleared — AI is now off");
-          }}>Clear API key & disable AI</button>
-        </div>
-        <p className="muted small"><strong>How it works:</strong> every uploaded resume is first read by the built-in local parser — fully offline, no key needed, always on. If you enable a provider here, the extracted text is additionally sent to that provider to get cleaner structured fields, and you review everything before saving.</p>
-        <p className="muted small"><strong>Getting a key (both have free tiers):</strong> Gemini — sign in at aistudio.google.com and click "Get API key". OpenRouter — sign up at openrouter.ai and create a key under Keys. Paste it above and choose the matching provider.</p>
-        <p className="muted small"><strong>Privacy & cost:</strong> your key is saved {IS_WEB() ? "with your HV Vault data, which syncs privately to your Google account (only you can read it)," : "only on this PC (inside your HV Vault data file)"} and is sent only to the provider you chose, only at the moment of parsing. API usage may be subject to the provider's rate limits and pricing. Without a key, the app works fully — AI is off by default.</p>
-      </div>
+      <HVAIKeyCard s={s} set={set} setData={setData} notify={notify} />
 
       <div className="card">
         <h3 className="card-title">Export data (CSV)</h3>
@@ -5033,7 +5086,7 @@ function SettingsPage({ data, setData, notify }) {
        ~64px — it will blur. Do not use COMPACT above ~96px — it will
        look chunky instead of premium. */
 const HV_LOGO_SVG = '<svg viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="hvaimk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B3157"/><stop offset=".5" stop-color="#152647"/><stop offset="1" stop-color="#0C1830"/></linearGradient></defs><rect width="1024" height="1024" rx="230" fill="url(#hvaimk)"/><path d="M 608.00 360.68 A 179.2 179.2 0 1 1 416.00 360.68" fill="none" stroke="#DFC18A" stroke-width="96" stroke-linecap="round"/><path d="M 608.00 206.74 A 320 320 0 1 1 416.00 206.74" fill="none" stroke="#C9A45E" stroke-width="83.2" stroke-linecap="round"/><circle cx="512" cy="512" r="96" fill="#EAD9B0"/></svg>';
-const HVAI_KEY_HELP = "HV AI needs your AI key once. Open Settings > AI, choose Gemini, paste your key (free: aistudio.google.com > Get API key) and save. HV Reset then uses the same key automatically.";
+const HVAI_KEY_HELP = "HV AI needs your AI key once. Open Settings > HV AI, paste your Gemini key (free: aistudio.google.com > Get API key) and save. HV Reset then uses the same key automatically.";
 
 function BrandMark({ size = 38 }) {
   const compact = size <= 52;

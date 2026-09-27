@@ -60,7 +60,9 @@
       today_plan: plan && plan.blocks ? { date: plan.date, blocks: plan.blocks.map((b) => ({ block_id: b.id, start: b.start, duration_min: b.duration_min, title: b.title, kind: b.kind, core: !!b.core, done: b.done || undefined })) } : null,
       stats: {
         applied_today: (d.jobs || []).filter((j) => j.date_applied === n.date).length,
-        applied_this_week: (d.jobs || []).filter((j) => j.date_applied && j.date_applied >= weekStart && j.date_applied <= n.date).length,
+        applied_this_week: (d.jobs || []).filter((j) => j.date_applied && j.date_applied >= weekStart && j.date_applied <= n.date).length,   // weeks start on Monday
+        week_starts: weekStart,
+        applied_last_7_days: (d.jobs || []).filter((j) => j.date_applied && j.date_applied > addDays(n.date, -7) && j.date_applied <= n.date).length,
         followups_due_or_overdue: pending.filter((f) => f.due_date && f.due_date <= n.date).length,
       },
     };
@@ -130,6 +132,7 @@
     "Your calls are proposals: the app shows them to Harsh to confirm. Never say something is done or updated ('kar diya', 'ho gaya', 'done', 'updated' are wrong); say what will happen after he confirms, e.g. 'Ye raha naya plan, confirm karo.'",
     "Use ids from the context when a job/follow-up clearly matches. If a company or role matches more than one job and the user did not say which, call askClarification listing them. If nothing matches, say so in 'answer' and do not invent ids.",
     "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. In function arguments output dates as YYYY-MM-DD and times as HH:MM (24-hour). In any text Harsh reads (answer, askClarification) always write times in 12-hour format with AM/PM, e.g. 5:25 PM, never 17:25.",
+    "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
     "Day plans (HV Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' = a free block from 19:00. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
@@ -232,12 +235,27 @@
     }
     return { actions: calls };
   }
+  /* Words that say when something happens. If a message has none, an event can't have a real date:
+     the model guessed it, so HV AI asks instead (never guesses). */
+  const WHEN_RE = /\b(aaj|aj|today|tonight|kal|tomorrow|parso|parson|narso|day after|next|agle|agli|is|this|coming|mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(rs(day)?)?|fri(day)?|sat(urday)?|sun(day)?|somvar|mangalvar|budhvar|guruvar|shukravar|shanivar|ravivar|jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?|subah|dopahar|shaam|sham|raat|morning|afternoon|evening|night|noon|baje|am|pm|\d+\s*(din|days?|hafte|weeks?))\b|\d{1,2}[:.]\d{2}|\d{1,2}\s*(am|pm)|\d{1,2}[\/-]\d{1,2}|\d{4}-\d{2}-\d{2}|आज|कल|परसों|बजे|सुबह|शाम|रात/i;
+  function guard(actions, userText) {
+    if (!Array.isArray(actions) || WHEN_RE.test(String(userText || ""))) return actions;
+    let asked = actions.some((a) => a && a.type === "askClarification");
+    const out = [];
+    actions.forEach((a) => {
+      if (a && a.type === "addEvent") {
+        if (!asked) out.push({ type: "askClarification", args: { question: "Kab hai? Date aur time batao (jaise: kal 4 baje)." } });
+        asked = true;
+      } else if (!(a && a.type === "answer" && asked)) out.push(a);
+    });
+    return out;
+  }
   async function interpret(cfg, userText, context, history, app) {
     if (!hasAI(cfg)) return { error: "NO_KEY" };
     const scope = scopeOf(app);
-    if (cfg.provider === "openrouter") { const o = await openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR, scope); return o && o.actions ? Object.assign({}, o, { actions: o.actions.map(normalize) }) : o; }
+    if (cfg.provider === "openrouter") { const o = await openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR, scope); return o && o.actions ? Object.assign({}, o, { actions: guard(o.actions.map(normalize), userText) }) : o; }
     const model = cfg.model || DEFAULT_GEMINI;
-    const tidy = (x) => (x && x.actions ? Object.assign({}, x, { actions: x.actions.map(normalize) }) : x);
+    const tidy = (x) => (x && x.actions ? Object.assign({}, x, { actions: guard(x.actions.map(normalize), userText) }) : x);
     let r = tidy(await geminiActions(cfg, userText, context, history, model, scope));
     const usable = r.actions && r.actions.some((a) => validate(a).ok);
     if (!cfg.model && (r.error || !usable) && r.status !== 400 && r.status !== 401 && r.status !== 403) {   // retry once on the stronger model
@@ -431,6 +449,19 @@
         notes.push("Split '" + base.title + "' into " + parts.length + " blocks (one block, one task).");
       } else blocks.push(base);
     });
+    const MAXB = 90, cut = [];                                           // HV Reset rule: work blocks are 90 min at most, with a short break between
+    blocks.forEach((b) => {
+      if (["free", "meal", "rest", "close"].indexOf(b.kind) >= 0 || !(b.duration_min > MAXB)) { cut.push(b); return; }
+      const n = Math.ceil(b.duration_min / MAXB), each = Math.round(b.duration_min / n / 5) * 5 || MAXB;
+      let t = b.start;
+      for (let i = 0; i < n; i++) {
+        const len = i === n - 1 ? b.duration_min - each * (n - 1) : each;
+        cut.push(Object.assign({}, b, { block_id: i ? undefined : b.block_id, start: t, duration_min: len })); t += len;
+        if (i < n - 1) { cut.push({ start: t, duration_min: 15, title: "Break", kind: "rest", core: false }); t += 15; }
+      }
+      notes.push("Split '" + b.title + "' (" + b.duration_min + " min) into " + n + " blocks with short breaks (90 min max per block).");
+    });
+    blocks = cut;
     blocks.sort((a, b) => a.start - b.start);
     if (current && current.length) {                                     // finished blocks stay exactly where they were
       current.filter((c) => c.done).forEach((c) => {
@@ -817,5 +848,5 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     return { open, close, run, showActions, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
   }
 
-  root.HVAI = { version: 1, pickConfig, builtInAI, hasAI, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
+  root.HVAI = { version: 1, guard, pickConfig, builtInAI, hasAI, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
 })(typeof window !== "undefined" ? window : globalThis);

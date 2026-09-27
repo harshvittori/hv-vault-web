@@ -10,6 +10,8 @@ import {
   Sparkles, Eye, Files, AlarmClock, CircleDot, GraduationCap, Zap, User, Wand2, Image as ImageIcon, CalendarDays, ChevronLeft, RotateCcw,
 } from "lucide-react";
 import "./shared/apply-rule.js";   // window.HVApplyRule: the 2-minute apply rule shared with Harsh Reset
+import "./shared/hv-ai.js";        // window.HVAI: the HV AI assistant shared with Harsh Reset
+import "./shared/hv-ai-tests.js";  // window.HVAI_TESTS: HV AI command test set (Settings > self-test)
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import mammoth from "mammoth/mammoth.browser";
@@ -623,6 +625,8 @@ const Accordion = ({ items }) => {
 
 export default function HVVault() {
   const [data, setData] = useState(null);
+  const dataRef = useRef(null); dataRef.current = data;
+  const aiRef = useRef(null);
   const [page, setPage] = useState("dashboard");
   const [globalQuery, setGlobalQuery] = useState("");
   const [toast, setToast] = useState(null);
@@ -670,6 +674,34 @@ export default function HVVault() {
 
   // Harsh Reset inbox: the sync engine hands over queued actions; apply them to the data, save, then it clears them.
   const hasData = !!data;
+
+  // HV AI: floating assistant. It only proposes; confirmed actions are applied here via applyAIActions.
+  useEffect(() => {
+    if (!hasData || !IS_WEB() || !window.HVAI || aiRef.current) return;
+    const commit = async (fn) => {
+      let out;
+      await new Promise((res) => setData((d) => { out = fn(d); res(); return out.data; }));
+      await window.storage.set(STORAGE_KEY, JSON.stringify(out.data));
+      return out;
+    };
+    aiRef.current = window.HVAI.mount({
+      app: "vault", logoSVG: HV_LOGO_SVG, keyHelp: HVAI_KEY_HELP, canPlan: false,
+      getData: () => dataRef.current,
+      getSettings: () => { const st = dataRef.current.settings; return { provider: st.aiProvider, key: st.aiKey, model: st.aiModel }; },
+      getContext: () => window.HVAI.buildContext(dataRef.current, null),
+      userName: () => dataRef.current.settings.myName || "Harsh",
+      isDark: () => dataRef.current.settings.theme === "dark",
+      planHandoff: (action) => "../harsh-reset/#hvplan=" + encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(action))))),
+      execute: async (actions) => {
+        const out = await commit((d) => applyAIActions(d, actions, todayISO()));
+        return {
+          messages: out.messages,
+          undo: async () => { await commit((d) => ({ data: revertAI(d, out.undo) })); return "Undone. That change is reverted."; },
+        };
+      },
+    });
+    aiRef.current.setVisible(!!dataRef.current.profile);   // hidden during profile setup; render keeps it in sync after
+  }, [hasData]);
   useEffect(() => {
     const cloud = typeof window !== "undefined" && window.hv && window.hv.cloud;
     if (!hasData || !cloud || !cloud.setInboxHandler) return;
@@ -768,6 +800,7 @@ export default function HVVault() {
 
   const theme = data.settings.theme || "light";
   const needsProfile = IS_WEB() && !setupLater && (!data.profile || setupCelebrating);
+  if (aiRef.current) aiRef.current.setVisible(!needsProfile);
   const toggleTheme = () => setData((d) => ({ ...d, settings: { ...d.settings, theme: theme === "light" ? "dark" : "light" } }));
 
   const pages = {
@@ -969,6 +1002,7 @@ const normLink = (u) => String(u || "").trim().toLowerCase()
 const sameText = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
 function applyInbox(d0, actions) {
   const seen = new Set(d0.settings.inboxDone || []);
+  const aiUndo = { ...(d0.settings.aiUndo || {}) };
   let d = d0, applied = 0;
   const toApplied = (dd, job, day) => (PRE_APPLY.includes(job.status) || !job.status ? stageJob(dd, job.id, "Applied", day, "from Harsh Reset") : dd);
   for (const a of actions) {
@@ -1013,10 +1047,106 @@ function applyInbox(d0, actions) {
     } else if (a.type === "fu_done") {
       const f = d.followups.find((x) => x.id === a.followupId);
       if (f && f.status !== "Done") d = { ...d, followups: d.followups.map((x) => (x.id === f.id ? { ...x, status: "Done", sent_date: x.sent_date || day, completed_date: day } : x)) };
+    } else if (a.type === "ai" && Array.isArray(a.actions)) {        // HV AI batch confirmed in Harsh Reset
+      const r = applyAIActions(d, a.actions, day);
+      d = r.data; if (a.batch) aiUndo[a.batch] = r.undo;
+    } else if (a.type === "ai_undo" && a.batch && aiUndo[a.batch]) {
+      d = revertAI(d, aiUndo[a.batch]); delete aiUndo[a.batch];
     }
   }
   if (d === d0 && seen.size === (d0.settings.inboxDone || []).length) return d0;
-  return { ...d, settings: { ...d.settings, inboxDone: [...seen].slice(-400) } };
+  const keep = Object.keys(aiUndo).slice(-5), undoKept = {}; keep.forEach((k) => { undoKept[k] = aiUndo[k]; });
+  return { ...d, settings: { ...d.settings, inboxDone: [...seen].slice(-400), aiUndo: undoKept } };
+}
+
+/* ---- HV AI: apply confirmed actions (pure). Returns the new data, an undo record (the
+   previous version of every touched item, or null for items it created) and plain messages
+   describing exactly what was done. Stage changes go through stageJob, i.e. moveJob's logic. */
+function applyAIActions(d0, actions, day) {
+  let d = d0; const undo = {}, messages = [], autoFU = {};
+  const on = day || todayISO();
+  const touch = (coll, id) => { undo[coll] = undo[coll] || {}; if (!(id in undo[coll])) undo[coll][id] = (d[coll] || []).find((x) => x.id === id) || null; };
+  const cname = (id) => (d.companies.find((c) => c.id === id) || {}).name || "";
+  const jl = (j) => (j.title || "Role") + " at " + (cname(j.company_id) || "unknown company");
+  const findJob = (id) => d.jobs.find((j) => j.id === id);
+  const move = (job, stage) => {
+    const before = new Set(d.followups.map((f) => f.id));
+    touch("jobs", job.id);
+    d = stageJob(d, job.id, stage, on, "HV AI");
+    d.followups.filter((f) => !before.has(f.id)).forEach((f) => {           // created by this batch: undo removes it
+      undo.followups = undo.followups || {}; if (!(f.id in undo.followups)) undo.followups[f.id] = null; autoFU[job.id] = f.id;
+    });
+  };
+  for (const act of actions || []) {
+    const a = act.args || {}, t = act.type;
+    if (t === "addJob") {
+      let company = d.companies.find((c) => sameText(c.name, a.company));
+      if (!company) {
+        company = { id: uid(), name: String(a.company).trim(), website: "", career_page: "", linkedin: "", location: "", industry: "", size: "", hiring_status: "Unknown", priority: "Medium", status: "To Research", tags: [], notes: "Added by HV AI.", contact_name: "", contact_email: "", recruiter_linkedin: "", last_checked_date: on, next_check_date: "", rating: "", created_at: on };
+        touch("companies", company.id); d = { ...d, companies: [...d.companies, company] };
+      }
+      const job = { id: uid(), company_id: company.id, title: String(a.role).trim(), source: a.source || "", job_link: a.link || "", location: a.location || "", work_mode: "", job_type: "Full-time", salary_range: "", experience_required: "", skills_required: "", description: "", deadline: "", priority: "Medium", fit_score: "", excitement_score: "", status: "Saved", tags: [], notes: a.notes || "", date_saved: on, date_applied: "", interview_date: "", resume_id: "", cover_id: "", resume_attached_date: "", resume_verdict: "", timeline: [{ date: on, event: "Job saved (HV AI)" }], prep_done: [] };
+      touch("jobs", job.id); d = { ...d, jobs: [...d.jobs, job] };
+      if (a.stage && a.stage !== "Saved") move(findJob(job.id), a.stage);
+      messages.push("Added " + jl(job) + (a.stage && a.stage !== "Saved" ? " in " + a.stage : "") + ".");
+    } else if (t === "updateJob" || t === "moveStage" || t === "deleteJob") {
+      const job = findJob(a.job_id);
+      if (!job) { messages.push("Skipped: that job no longer exists."); continue; }
+      if (t === "moveStage") {
+        if (job.status === a.stage) { messages.push(jl(job) + " is already in " + a.stage + "."); continue; }
+        move(job, a.stage);
+        const fu = autoFU[job.id] && d.followups.find((f) => f.id === autoFU[job.id]);
+        messages.push("Moved " + jl(job) + " to " + a.stage + "." + (fu ? " Follow-up set for " + fmtDate(fu.due_date) + "." : ""));
+      } else if (t === "deleteJob") {
+        touch("jobs", job.id); d = { ...d, jobs: d.jobs.filter((j) => j.id !== job.id) };
+        messages.push("Deleted " + jl(job) + ".");
+      } else {
+        const patch = {};
+        if (a.new_title) patch.title = a.new_title;
+        if (a.link) patch.job_link = a.link;
+        ["source", "location", "priority", "deadline"].forEach((k) => { if (a[k]) patch[k] = a[k]; });
+        if (a.notes) patch.notes = ((job.notes || "") + "\n[" + fmtDate(on) + "] " + a.notes).trim();
+        touch("jobs", job.id); d = { ...d, jobs: d.jobs.map((j) => (j.id === job.id ? { ...j, ...patch, updated_at: todayISO() } : j)) };
+        messages.push("Updated " + jl(job) + " (" + Object.keys(patch).map((k) => (k === "job_link" ? "link" : k)).join(", ") + ").");
+      }
+    } else if (t === "addFollowUp") {
+      const job = findJob(a.job_id);
+      if (!job) { messages.push("Skipped follow-up: that job no longer exists."); continue; }
+      const auto = autoFU[job.id] && d.followups.find((f) => f.id === autoFU[job.id]);
+      if (auto) {                                                     // same batch moved it to Applied: adjust that follow-up instead of adding a second
+        d = { ...d, followups: d.followups.map((f) => (f.id === auto.id ? { ...f, due_date: a.due_date, title: a.title || f.title, type: a.type || f.type, notes: a.notes || f.notes } : f)) };
+        messages.push("Follow-up for " + jl(job) + " set to " + fmtDate(a.due_date) + ".");
+      } else {
+        const f = { id: uid(), title: a.title || "Follow up", job_id: job.id, company_id: job.company_id, contact_name: "", type: a.type || "Email", due_date: a.due_date, status: "Pending", message_draft: "", notes: a.notes || "Added by HV AI." };
+        touch("followups", f.id); d = { ...d, followups: [...d.followups, f] };
+        messages.push("Follow-up for " + jl(job) + " on " + fmtDate(a.due_date) + ".");
+      }
+    } else if (t === "completeFollowUp") {
+      const f = d.followups.find((x) => x.id === a.followup_id);
+      if (!f || f.status === "Done") { messages.push("Skipped: that follow-up isn't pending."); continue; }
+      touch("followups", f.id); d = { ...d, followups: d.followups.map((x) => (x.id === f.id ? { ...x, status: "Done", sent_date: x.sent_date || on, completed_date: on } : x)) };
+      messages.push("Marked done: " + (f.title || "follow-up") + (cname(f.company_id) ? " (" + cname(f.company_id) + ")" : "") + ".");
+    } else if (t === "addEvent") {
+      const job = a.job_id && findJob(a.job_id);
+      const ev = { id: uid(), title: a.title, type: a.type || "custom", date: a.date, time: a.time || "", company_id: job ? job.company_id : "", job_id: job ? job.id : "", contact: "", notes: a.notes || (a.duration_min ? a.duration_min + " min" : ""), status: "upcoming", priority: "Medium", reminder: "same" };
+      touch("calendarEvents", ev.id); d = { ...d, calendarEvents: [...(d.calendarEvents || []), ev] };
+      messages.push("Added to calendar: " + ev.title + ", " + fmtDate(ev.date) + (ev.time ? " at " + ev.time : "") + ".");
+    }
+  }
+  return { data: d, undo, messages };
+}
+function revertAI(d0, undo) {
+  let d = d0;
+  Object.keys(undo || {}).forEach((coll) => {
+    let list = [...(d[coll] || [])];
+    Object.entries(undo[coll]).forEach(([id, before]) => {
+      const i = list.findIndex((x) => x.id === id);
+      if (before === null) { if (i >= 0) list.splice(i, 1); }
+      else if (i >= 0) list[i] = before; else list.push(before);
+    });
+    d = { ...d, [coll]: list };
+  });
+  return d;
 }
 
 /* Save a parsed/entered profile into the data: settings used across the app, the profile
@@ -2515,7 +2645,7 @@ function PipelinePage({ data, moveJob, companyName, openDetail, setModal }) {
     if (!el) return;
     const HOLD = 350, SLOP = 10;
     const t = touch.current;
-    const stageAt = (x, y) => { const n = document.elementFromPoint(x, y); const col = n && n.closest ? n.closest(".kanban-col") : null; return col ? col.getAttribute("data-stage") : null; };
+    const stageAt = (x, y) => { const col = document.elementsFromPoint(x, y).map((n) => n.closest && n.closest(".kanban-col")).find(Boolean); return col ? col.getAttribute("data-stage") : null; };   // looks through floating layers (e.g. the HV AI button)
     const reset = () => {
       clearTimeout(t.timer);
       if (t.ghost) t.ghost.remove();
@@ -4326,6 +4456,15 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.8.0": {
+    title: "Meet HV AI",
+    points: [
+      "HV AI, your assistant in HV Vault and Harsh Reset: tap the HV AI button, type or hold the mic, in Hindi, English or Hinglish",
+      "Add, update, move or delete jobs, set follow-ups and interviews, or ask what's pending. Try: \"Cred ko applied mark karo aur 5 din baad follow-up laga do\"",
+      "Every change shows as a card first: Confirm, Edit or Cancel. Deletes always ask, unclear names get a question, and the last change can be undone",
+      "In Harsh Reset it also builds and edits your day plan, keeping meals and core blocks",
+    ],
+  },
   "2.7.0": {
     title: "HV Vault and Harsh Reset, one system",
     points: [
@@ -4586,6 +4725,45 @@ function WizardCloudLink({ onClose }) {
   );
 }
 
+function HVAISelfTest({ settings }) {
+  const [rows, setRows] = useState([]);
+  const [running, setRunning] = useState(false);
+  const T = typeof window !== "undefined" && window.HVAI_TESTS;
+  const cfg = { provider: settings.aiProvider, key: settings.aiKey, model: settings.aiModel };
+  const hasKey = cfg.key && cfg.provider && cfg.provider !== "off";
+  const run = async () => {
+    setRunning(true); setRows([]);
+    const out = [];
+    for (const t of T.TESTS) {
+      let r; try { r = await T.runOne(window.HVAI, cfg, t); } catch (e) { r = { ok: false, why: String(e && e.message || e), actions: [] }; }
+      out.push({ t, r }); setRows([...out]);
+    }
+    setRunning(false);
+  };
+  const passed = rows.filter((x) => x.r.ok).length;
+  return (
+    <div className="card">
+      <h3 className="card-title">HV AI self-test</h3>
+      <p className="muted small" style={{ marginBottom: 10 }}>Runs {T ? T.TESTS.length : 0} sample commands (Hinglish, Hindi, English, voice-style) through HV AI with your key and checks the actions it proposes. It uses sample data, not yours, and changes nothing.</p>
+      {!hasKey ? <p className="muted small">Add your AI key below first.</p> : (
+        <button className="btn btn-primary btn-sm" disabled={running || !T} onClick={run}>{running ? "Running " + rows.length + "/" + T.TESTS.length + "…" : rows.length ? "Run again" : "Run self-test"}</button>
+      )}
+      {rows.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <p style={{ fontWeight: 700, marginBottom: 6 }}>{passed}/{rows.length} passed</p>
+          {rows.map(({ t, r }, i) => (
+            <div key={i} style={{ borderTop: "1px solid var(--line)", padding: "7px 0", fontSize: 13 }}>
+              <div><span style={{ color: r.ok ? "var(--green)" : "var(--red)", fontWeight: 700 }}>{r.ok ? "PASS" : "FAIL"}</span> <span className="muted">[{t.lang}]</span> {t.cmd}</div>
+              <div className="muted">Expected: {r.why}{r.ms ? " · " + (r.ms / 1000).toFixed(1) + "s" : ""}</div>
+              <div className="muted mono" style={{ fontSize: 11.5 }}>{(r.actions || []).map((a) => a.action.type + "(" + a.status + ")" + (a.action.args ? " " + JSON.stringify(a.action.args).slice(0, 160) : "")).join(" ; ")}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsPage({ data, setData, notify }) {
   const s = data.settings;
   const set = (k) => (e) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: e.target.value } }));
@@ -4710,6 +4888,7 @@ function SettingsPage({ data, setData, notify }) {
       <PageHead title="Settings" sub="Your preferences power the templates, follow-up timing, and dashboard" />
       <UpdatesCard />
       <CloudSyncCard notify={notify} />
+      {IS_WEB() && <HVAISelfTest settings={data.settings} />}
 
       <div className="card">
         <h3 className="card-title">Privacy — how your data is handled</h3>
@@ -4838,6 +5017,9 @@ function SettingsPage({ data, setData, notify }) {
        app icon / installer graphics / marketing. Do not use FULL below
        ~64px — it will blur. Do not use COMPACT above ~96px — it will
        look chunky instead of premium. */
+const HV_LOGO_SVG = '<svg viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="hvaimk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B3157"/><stop offset=".5" stop-color="#152647"/><stop offset="1" stop-color="#0C1830"/></linearGradient></defs><rect width="1024" height="1024" rx="230" fill="url(#hvaimk)"/><path d="M 608.00 360.68 A 179.2 179.2 0 1 1 416.00 360.68" fill="none" stroke="#DFC18A" stroke-width="96" stroke-linecap="round"/><path d="M 608.00 206.74 A 320 320 0 1 1 416.00 206.74" fill="none" stroke="#C9A45E" stroke-width="83.2" stroke-linecap="round"/><circle cx="512" cy="512" r="96" fill="#EAD9B0"/></svg>';
+const HVAI_KEY_HELP = "HV AI needs your AI key once. Open Settings > AI, choose Gemini, paste your key (free: aistudio.google.com > Get API key) and save. Harsh Reset then uses the same key automatically.";
+
 function BrandMark({ size = 38 }) {
   const compact = size <= 52;
   return (

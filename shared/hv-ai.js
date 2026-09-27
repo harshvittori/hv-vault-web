@@ -166,10 +166,10 @@
   }
   const friendlyErr = (r) => {
     const m = (r.json && r.json.error && (r.json.error.message || r.json.error)) || "";
-    if (r.status === 400 && /api key/i.test(m)) return "Your AI key was rejected. Check it in HV Vault > Settings > AI.";
-    if (r.status === 401 || r.status === 403) return "Your AI key isn't allowed (" + (m || r.status) + "). Check it in HV Vault > Settings > AI.";
+    if (r.status === 400 && /api key/i.test(m)) return "Your AI key was rejected. Check it in HV Vault > Settings > HV AI.";
+    if (r.status === 401 || r.status === 403) return "Your AI key isn't allowed (" + (m || r.status) + "). Check it in HV Vault > Settings > HV AI.";
     if (r.status === 429) return "The AI is rate-limited right now. Try again in a minute.";
-    if (r.status === 404) return "That AI model isn't available. Clear the Model field in HV Vault > Settings > AI.";
+    if (r.status === 404) return "That AI model isn't available. Clear the Model field in HV Vault > Settings > HV AI > Advanced.";
     if (!r.status) return "Couldn't reach the AI (" + m + "). Check your internet.";
     return "AI error: " + (m || "HTTP " + r.status);
   };
@@ -600,7 +600,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (!log.childElementCount) {
         history.slice(-20).forEach((h) => add("hvai-msg " + (h.role === "user" ? "me" : "ai"), esc(h.text)));
         const c = cfg();
-        if (!c.key || !c.provider || c.provider === "off") say("ai", host.keyHelp || "HV AI needs an AI key. Open HV Vault > Settings > AI, choose Gemini, paste your key (free from aistudio.google.com) and save. Then come back here.", false);
+        if (!c.key || !c.provider || c.provider === "off") say("ai", host.keyHelp || "HV AI needs an AI key. Open HV Vault > Settings > HV AI, paste your Gemini key (free from aistudio.google.com) and save. Then come back here.", false);
         else say("ai", "Bolo " + firstName() + ", kya karna hai?", false);
       }
       setTimeout(() => input.focus(), 50);
@@ -713,11 +713,11 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       input.value = ""; grow();
       const c = cfg();
       say("user", text);
-      if (!c.key || !c.provider || c.provider === "off") { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > AI first.", false); return; }
+      if (!c.key || !c.provider || c.provider === "off") { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       busy = true; send.disabled = true; const typing = add("hvai-typing", "HV AI is thinking…");
       let r;
       try { r = await interpret(c, text, host.getContext(), history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
-      if (r.error) { say("sys", r.error === "NO_KEY" ? "Add your AI key in HV Vault > Settings > AI." : r.error, false); return; }
+      if (r.error) { say("sys", r.error === "NO_KEY" ? "Add your AI key in HV Vault > Settings > HV AI." : r.error, false); return; }
       const batch = { items: [] };
       const scope = scopeOf(host.app), all = (r.actions || []).slice(0, 12);
       const acts = all.filter((a) => a && scope.allowed.indexOf(a.type) >= 0);     // this app's HV AI only changes this app
@@ -741,7 +741,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     async function micDown(e) {
       e.preventDefault(); if (busy) return;
       const c = cfg();
-      if (!c.key || c.provider === "off" || !c.provider) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > AI first.", false); return; }
+      if (!c.key || c.provider === "off" || !c.provider) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       if (c.provider === "gemini" && canRecord()) {
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });

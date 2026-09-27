@@ -4,21 +4,31 @@
 import React, { useEffect, useState } from "react";
 
 const CSS = `
-.hv-gate{--bg:#F6F7FA;--card:#FFFFFF;--line:#E6EAF1;--text:#28313F;--slate:#5C6779;--accent:#5B7CC4;--accent-deep:#47649F;--err:#B4443A;
-  min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:var(--bg);color:var(--text);
-  font-family:'Inter',system-ui,sans-serif;font-size:15.5px;line-height:1.55}
-@media (prefers-color-scheme:dark){.hv-gate{--bg:#14171E;--card:#1E232E;--line:#333B4A;--text:#F1F3F8;--slate:#C2CAD8;--accent:#8FA9E0;--accent-deep:#6E8FD4;--err:#F08A80}}
-.hv-gate-card{width:100%;max-width:400px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:32px 28px;text-align:center;box-shadow:0 10px 30px rgba(20,30,50,.06)}
-.hv-gate h1{font-family:'Sora','Inter',sans-serif;font-size:24px;margin:12px 0 4px}
-.hv-gate p{margin:0 0 18px;color:var(--slate)}
-.hv-gate img{width:56px;height:56px;border-radius:14px}
-.hv-gate-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:12px 16px;border-radius:10px;border:0;
-  background:var(--accent);color:#fff;font:600 15px 'Inter',system-ui,sans-serif;cursor:pointer}
-.hv-gate-btn:hover{background:var(--accent-deep)}
-.hv-gate-btn:disabled{opacity:.6;cursor:default}
-.hv-gate-link{margin-top:12px;background:none;border:0;color:var(--slate);font:inherit;font-size:14px;text-decoration:underline;cursor:pointer}
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@200;300;500;600&family=Atkinson+Hyperlegible:wght@400;700&display=swap');
+.hv-gate{--sky1:#D9E3F4;--sky2:#E9E1F1;--sky3:#F8E4D2;--orb1:#A9BCEB;--orb2:#F6C79A;--card:rgba(255,255,255,.56);--border:rgba(255,255,255,.8);--hi:rgba(255,255,255,.95);
+  --text:#16202E;--slate:#46516A;--err:#B4443A;
+  position:relative;overflow:hidden;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;
+  background:linear-gradient(180deg,var(--sky1) 0%,var(--sky2) 56%,var(--sky3) 100%);color:var(--text);
+  font-family:'Atkinson Hyperlegible','Inter',system-ui,sans-serif;font-size:15.5px;line-height:1.55}
+@media (prefers-color-scheme:dark){.hv-gate{--sky1:#070C1A;--sky2:#141A38;--sky3:#2E2342;--orb1:#3346A0;--orb2:#9A6440;--card:rgba(255,255,255,.07);--border:rgba(255,255,255,.14);--hi:rgba(255,255,255,.18);--text:#EEF1F7;--slate:#C3CADB;--err:#F08A80}}
+.hv-gate::before,.hv-gate::after{content:"";position:absolute;border-radius:50%;pointer-events:none}
+.hv-gate::before{width:80vmax;height:80vmax;left:-30vmax;top:-40vmax;background:radial-gradient(circle,var(--orb1) 0%,transparent 68%);opacity:.8}
+.hv-gate::after{width:70vmax;height:70vmax;right:-28vmax;bottom:-38vmax;background:radial-gradient(circle,var(--orb2) 0%,transparent 68%);opacity:.75}
+.hv-gate-card{position:relative;z-index:1;width:100%;max-width:420px;background:var(--card);border:1px solid var(--border);border-radius:30px;padding:38px 30px;text-align:center;
+  box-shadow:0 30px 80px -24px rgba(40,50,80,.38),inset 0 1px 0 var(--hi);-webkit-backdrop-filter:blur(30px) saturate(165%);backdrop-filter:blur(30px) saturate(165%)}
+.hv-gate h1{font-family:'Sora',sans-serif;font-weight:300;font-size:34px;letter-spacing:-.03em;margin:14px 0 6px}
+.hv-gate p{margin:0 0 20px;color:var(--slate)}
+.hv-gate img{width:60px;height:60px;border-radius:16px;box-shadow:0 12px 28px -12px rgba(40,50,90,.6)}
+.hv-gate-btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:14px 18px;border-radius:999px;border:0;
+  background:linear-gradient(135deg,#4F66E0 0%,#7C5CE0 100%);color:#fff;font:700 15.5px 'Atkinson Hyperlegible',system-ui,sans-serif;cursor:pointer;
+  box-shadow:0 12px 28px -10px rgba(79,102,224,.85),inset 0 1px 0 rgba(255,255,255,.25);transition:transform .3s cubic-bezier(.22,1,.36,1)}
+.hv-gate-btn:hover{transform:translateY(-1px)}
+.hv-gate-btn:disabled{opacity:.6;cursor:default;transform:none}
+.hv-gate-btn svg{background:#fff;border-radius:50%;padding:2px;width:22px;height:22px}
+.hv-gate-link{margin-top:14px;background:none;border:0;color:var(--slate);font:inherit;font-size:14px;text-decoration:underline;cursor:pointer}
 .hv-gate-err{color:var(--err);font-size:14px;margin:0 0 14px}
 .hv-gate-small{font-size:13px;margin:16px 0 0}
+.hv-gate-tag{font-family:'Sora',sans-serif;font-weight:300;font-size:17px;color:var(--text);opacity:.85}
 `;
 
 const G = (
@@ -69,7 +79,8 @@ export default function AuthGate({ children }) {
   if (!known) body = <p>Loading…</p>;
   else if (!user) body = (
     <>
-      <p>Sign in with your Google account. Your jobs, companies and resumes are saved to it, so you see the same data on your phone and laptop.</p>
+      <p className="hv-gate-tag">Your job hunt, one calm place.</p>
+      <p>Sign in with Google. Your jobs, companies and resumes are saved to your account, so your phone and laptop always match.</p>
       {err && <p className="hv-gate-err">{err}</p>}
       <button className="hv-gate-btn" onClick={signIn} disabled={busy}>{G}{busy ? "Signing in…" : "Continue with Google"}</button>
       <p className="hv-gate-small">Only you can see your data.</p>

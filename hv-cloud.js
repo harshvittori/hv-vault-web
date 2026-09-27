@@ -74,31 +74,52 @@
   function aiError(status, msg, hadAppCheck) {
     if (status === 403 && /disabled|not been used/i.test(msg)) return "AI isn't switched on for this site yet";
     if (status === 401 && /app check/i.test(msg)) return hadAppCheck ? "Couldn't verify this browser for AI. Reload the page, or turn off ad or tracker blockers" : "AI on this site needs App Check, which isn't set up here";
-    if (status === 429) return "HV AI is busy right now. Try again in a minute";
+    if (status === 429 || status === 503) return "HV AI is getting a lot of requests right now. Please try again in a minute";
     if (!status) return msg || "Couldn't reach the AI. Check your internet";
     return "AI error (" + (msg || "HTTP " + status) + ")";
   }
+  /* The free Gemini tier allows a limited number of requests per minute, per model. So a "too many
+     requests" (429) or overload (503) is handled here instead of shown: try the other model right away
+     (it has its own limit), and if both are full, wait as long as Google asks and try again. */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const askedDelay = (j) => {                          // seconds Google says to wait (RetryInfo), if it says
+    const d = ((j && j.error && j.error.details) || []).find((x) => x && x.retryDelay);
+    const s = d ? parseFloat(String(d.retryDelay)) : NaN;
+    return isFinite(s) ? s * 1000 + 300 : NaN;
+  };
   async function gemini(body, opts) {
     const o = opts || {};
     if (!aiOn()) return { ok: false, status: 0, json: {}, error: "AI isn't set up for this site" };
     const ac = await appCheckToken();
+    const models = o.models || AI_MODELS, patience = o.patience == null ? 30000 : o.patience, t0 = Date.now();
     let last = { status: 0, message: "", json: {} };
-    for (const m of o.models || AI_MODELS) {
-      const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), o.timeout || 45000);
-      let res, j = {};
-      try {
-        res = await fetch("https://firebasevertexai.googleapis.com/v1beta/projects/" + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", {
-          method: "POST", signal: ctrl.signal,
-          headers: Object.assign({ "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey }, ac ? { "X-Firebase-AppCheck": ac } : {}),
-          body: JSON.stringify(body),
-        });
-        try { j = await res.json(); } catch (e) {}
-      } catch (e) {
-        return { ok: false, status: 0, json: {}, error: e && e.name === "AbortError" ? "AI took too long. Try again" : "Couldn't reach the AI. Check your internet" };
-      } finally { clearTimeout(timer); }
-      if (res.ok && !j.error) return { ok: true, status: res.status, json: j, model: m };
-      last = { status: res.status, message: (j.error && j.error.message) || "", json: j };
-      if (res.status !== 404) break;
+    for (let tries = 0; ; tries++) {
+      let busy = false, soonest = NaN;
+      for (const m of models) {
+        const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), o.timeout || 45000);
+        let res, j = {};
+        try {
+          res = await fetch("https://firebasevertexai.googleapis.com/v1beta/projects/" + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", {
+            method: "POST", signal: ctrl.signal,
+            headers: Object.assign({ "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey }, ac ? { "X-Firebase-AppCheck": ac } : {}),
+            body: JSON.stringify(body),
+          });
+          try { j = await res.json(); } catch (e) {}
+        } catch (e) {
+          return { ok: false, status: 0, json: {}, error: e && e.name === "AbortError" ? "AI took too long. Try again" : "Couldn't reach the AI. Check your internet" };
+        } finally { clearTimeout(timer); }
+        if (res.ok && !j.error) return { ok: true, status: res.status, json: j, model: m };
+        last = { status: res.status, message: (j.error && j.error.message) || "", json: j };
+        if (res.status === 429 || res.status === 503) {                              // this model is full right now: try the next one
+          busy = true; const w = askedDelay(j); if (isFinite(w) && !(w >= soonest)) soonest = w; continue;
+        }
+        if (res.status !== 404) break;                                              // 404: model not available, try the next one
+      }
+      if (!busy) break;
+      const wait = Math.min(20000, Math.max(1000, isFinite(soonest) ? soonest : 2500 * Math.pow(2, tries)));   // the soonest any model frees up
+      if (Date.now() - t0 + wait > patience) break;
+      if (o.onWait) { try { o.onWait(wait); } catch (e) {} }
+      await sleep(wait);
     }
     return { ok: false, status: last.status, json: last.json, message: last.message, disabled: last.status === 403 && /disabled|not been used/i.test(last.message), error: aiError(last.status, last.message, !!ac) };
   }

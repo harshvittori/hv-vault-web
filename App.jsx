@@ -4498,6 +4498,13 @@ function runParse(st, text) {        // resume text → profile fields
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.9.2": {
+    title: "HV AI keeps going when it's busy",
+    points: [
+      "No more \"busy\" errors: when the free AI is full for the minute, HV AI quietly switches to its second model or waits a few seconds and tries again",
+      "The HV AI Full check runs at a steady pace (about 2 minutes) so it stays within the free limit",
+    ],
+  },
   "2.9.1": {
     title: "HV AI, sharper",
     points: [
@@ -4811,7 +4818,8 @@ function HVAISelfTest({ settings }) {
   const run = async () => {
     setRunning(true); setRows([]); setOpen(true);
     const out = [];
-    for (const t of T.TESTS) {
+    for (const [i, t] of T.TESTS.entries()) {
+      if (i) await new Promise((res) => setTimeout(res, 4000));        // spaced out so the free AI's per-minute limit is never hit
       let r; try { r = await T.runOne(window.HVAI, cfg, t); } catch (e) { r = { ok: false, why: String(e && e.message || e), actions: [] }; }
       out.push({ t, r }); setRows([...out]);
     }
@@ -4820,9 +4828,9 @@ function HVAISelfTest({ settings }) {
   const passed = rows.filter((x) => x.r.ok).length;
   if (!T || !hasKey) return null;
   return (<>
-    <SetRow icon={CheckCircle2} title="Full check" sub={rows.length ? passed + "/" + rows.length + " commands passed" : "Tries " + T.TESTS.length + " sample commands on sample data. Changes nothing."}>
+    <SetRow icon={CheckCircle2} title="Full check" sub={running ? "Checking " + rows.length + "/" + T.TESTS.length + " (about 2 minutes, paced for the free AI)" : rows.length ? passed + "/" + rows.length + " commands passed" : "Tries " + T.TESTS.length + " sample commands on sample data (about 2 minutes). Changes nothing."}>
       {rows.length > 0 && !running && <button className="btn btn-ghost btn-sm" onClick={() => setOpen((x) => !x)}>{open ? "Hide" : "Details"}</button>}
-      <button className="btn btn-ghost btn-sm" disabled={running} onClick={run}>{running ? "Running " + rows.length + "/" + T.TESTS.length + "…" : rows.length ? "Run again" : "Run"}</button>
+      <button className="btn btn-ghost btn-sm" disabled={running} onClick={run}>{running ? "Running…" : rows.length ? "Run again" : "Run"}</button>
     </SetRow>
     {open && rows.length > 0 && (
       <div className="set-detail">

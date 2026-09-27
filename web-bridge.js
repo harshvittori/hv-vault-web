@@ -388,7 +388,8 @@ if (typeof window !== "undefined" && !window.storage) {
   /* ---------- Resume parsing with the site's own Gemini (Firebase AI Logic) ----------
      No user key: requests go to the Firebase project in firebase-config.js. The project
      must have Firebase AI Logic enabled with the Gemini Developer API (free on Spark). */
-  const PROJECT_MODELS = ["gemini-3.5-flash", "gemini-3.1-flash-lite"];   // stable; second is a fallback if the first is unavailable
+  // Both stable. Flash-Lite reads a resume in ~2 s with the same result as 3.5 Flash (~20 s in testing); Flash is the fallback.
+  const PROJECT_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
   async function projectGemini(parts) {
     const cfg = window.HV_FIREBASE_CONFIG;
     if (!cfg || !cfg.apiKey || /PASTE/.test(cfg.apiKey)) return { error: "AI isn't set up for this site" };

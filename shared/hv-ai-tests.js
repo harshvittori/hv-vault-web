@@ -48,8 +48,8 @@
       const b = p.action.args.blocks, total = (k) => b.filter((x) => x.kind === k).reduce((s, x) => s + x.duration_min, 0);
       const free = b.find((x) => x.kind === "free"), workAfter7 = b.some((x) => ["apply", "prep", "outreach", "work"].indexOf(x.kind) >= 0 && min(x.start) + x.duration_min > 19 * 60);
       const miss = [p.action.args.date !== "2026-09-28" && "date " + p.action.args.date, total("apply") < 150 && "apply " + total("apply") + " min", total("prep") < 45 && "prep " + total("prep") + " min",
-        (workAfter7 || (free && min(free.start) < 19 * 60 - 1)) && "not free after 7 PM", !b.some((x) => x.kind === "meal") && "no meal", b.some((x) => x.kind !== "free" && x.duration_min > 90) && "a block over 90 min"].filter(Boolean);
-      return pass(!miss.length, "today: ~3h apply, ~1h prep, free after 7 PM, meals kept, blocks ≤ 90 min" + (miss.length ? " — got: " + miss.join(", ") : "")); }),
+        workAfter7 && "work after 7 PM", !b.some((x) => x.kind === "meal") && "no meal", b.some((x) => x.kind !== "free" && x.duration_min > 90) && "a block over 90 min"].filter(Boolean);
+      return pass(!miss.length, "today: ~3h apply, ~1h prep, no work after 7 PM, meals kept, blocks ≤ 90 min" + (miss.length ? " — got: " + miss.join(", ") : "")); }),
     T("Aaj kitne apply kiye aur kaunse follow-ups pending hain?", "Hinglish · question", (r) => {
       const a = of(r, "answer")[0]; return pass(a && /\b1\b|one|ek/i.test(a.action.args.text) && /groww/i.test(a.action.args.text) && !mutating(r).length, "answers 1 applied + Groww follow-up, changes nothing"); }),
     T("Add a Business Development Associate role at Meesho from Naukri", "English", (r) => {

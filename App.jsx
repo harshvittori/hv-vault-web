@@ -4498,6 +4498,13 @@ function runParse(st, text) {        // resume text → profile fields
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.9.3": {
+    title: "Your times stay yours",
+    points: [
+      "Day plans keep the exact times you say: \"2 se 3 outreach\" is always 2:00 to 3:00 PM, and breaks and meals fit around it",
+      "\"Shaam 7 ke baad free\" means no work after 7 PM",
+    ],
+  },
   "2.9.2": {
     title: "HV AI keeps going when it's busy",
     points: [

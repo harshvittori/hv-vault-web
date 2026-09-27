@@ -95,11 +95,10 @@
       if (!auth) await init();
       const p = new window.firebase.auth.GoogleAuthProvider();
       p.setCustomParameters({ prompt: "select_account" });
-      try { await auth.signInWithPopup(p); }
-      catch (e) {
-        if (/popup-blocked|operation-not-supported|popup-closed-by-browser/.test(e.code || "")) return auth.signInWithRedirect(p);
-        throw e;
-      }
+      // Popup only. The site (github.io) and the auth helper (firebaseapp.com) are different
+      // domains, so signInWithRedirect breaks on phones that partition storage ("missing initial
+      // state"). See firebase.google.com/docs/auth/web/redirect-best-practices, option 2.
+      await auth.signInWithPopup(p);
     },
     async signOut() { if (T) return T.auth.signOut(); if (auth) await auth.signOut(); },
     req, str, num, putValue, getValue, delValue,

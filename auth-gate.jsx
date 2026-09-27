@@ -33,6 +33,8 @@ const G = (
 const friendly = (e) => {
   const c = (e && e.code) || "";
   if (/popup-closed-by-user|cancelled-popup-request/.test(c)) return "";
+  if (/popup-blocked/.test(c)) return "Your browser blocked the Google sign-in window. Allow pop-ups for this site (or turn off the pop-up blocker), then tap Continue with Google again.";
+  if (/popup-closed-by-browser|operation-not-supported/.test(c)) return "Google sign-in couldn't open here. Open this page in Safari or Chrome itself (not inside another app), then try again.";
   if (/unauthorized-domain/.test(c)) return "This website isn't allowed to use Google sign-in yet (Firebase > Authentication > Authorized domains).";
   if (/network-request-failed/.test(c)) return "No internet connection. Check it and try again.";
   return "Sign-in failed: " + ((e && e.message) || e);

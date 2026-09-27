@@ -332,29 +332,36 @@ if (typeof window !== "undefined" && !window.storage) {
   });
 
   /* ---------- IPC: generic AI extraction (job / company / profile, text or image) ---------- */
+  /* what to pull out of a job post, a company page or a resume (shared by the own-key and built-in paths) */
+  const EXTRACT_PROMPTS = {
+    job: "Extract job posting details using exactly these keys: company_name, job_title, location, salary_range, " +
+      "work_mode (exactly one of: Remote, Hybrid, On-site — or empty string), " +
+      "job_type (exactly one of: Full-time, Part-time, Internship, Contract, Freelance — or empty string), " +
+      "experience_required, skills_required (comma-separated string), job_link, deadline (YYYY-MM-DD or empty), " +
+      "description (2-3 line summary of the role).",
+    company: "Extract company details using exactly these keys: name, industry, location, website, career_page, " +
+      "size (e.g. 51-200), notes (one line describing what the company does).",
+    profile: "Extract resume/profile details using exactly these keys: name, email, phone, linkedin, portfolio, location, " +
+      "target_role, total_experience (human-readable, e.g. '1 year 3 months'), skills (comma-separated string), summary, " +
+      "education, projects (include certifications), experience (readable multi-line text of all roles), " +
+      "work_experience (ARRAY of objects with keys company, role, duration — full-time jobs only), " +
+      "internships (ARRAY of objects with keys company, role, duration).",
+  };
+  const extractPrompt = (kind, text) =>
+    "You extract structured data. Respond with ONLY a valid JSON object — no markdown fences, no commentary. " +
+    "Missing values must be empty strings (or empty arrays for array keys). " +
+    (EXTRACT_PROMPTS[kind] || EXTRACT_PROMPTS.job) +
+    (text && String(text).trim() ? "\n\nTEXT:\n" + String(text).slice(0, 20000) : "\n\nRead the details from the attached image.");
+
   ipcMain.handle("hv:aiExtract", async (_e, { provider, apiKey, model, kind, text, imageBase64, imageMime }) => {
     try {
       if (!apiKey) return { error: "No API key set in Settings" };
       if ((!text || !String(text).trim()) && !imageBase64) return { error: "Nothing to analyze — paste text or add an image first" };
 
-      const PROMPTS = {
-        job: "Extract job posting details using exactly these keys: company_name, job_title, location, salary_range, " +
-          "work_mode (exactly one of: Remote, Hybrid, On-site — or empty string), " +
-          "job_type (exactly one of: Full-time, Part-time, Internship, Contract, Freelance — or empty string), " +
-          "experience_required, skills_required (comma-separated string), job_link, deadline (YYYY-MM-DD or empty), " +
-          "description (2-3 line summary of the role).",
-        company: "Extract company details using exactly these keys: name, industry, location, website, career_page, " +
-          "size (e.g. 51-200), notes (one line describing what the company does).",
-        profile: "Extract resume/profile details using exactly these keys: name, email, phone, linkedin, portfolio, location, " +
-          "target_role, total_experience (human-readable, e.g. '1 year 3 months'), skills (comma-separated string), summary, " +
-          "education, projects (include certifications), experience (readable multi-line text of all roles), " +
-          "work_experience (ARRAY of objects with keys company, role, duration — full-time jobs only), " +
-          "internships (ARRAY of objects with keys company, role, duration).",
-      };
       const prompt =
         "You extract structured data. Respond with ONLY a valid JSON object — no markdown fences, no commentary. " +
         "Missing values must be empty strings (or empty arrays for array keys). " +
-        (PROMPTS[kind] || PROMPTS.job) +
+        (EXTRACT_PROMPTS[kind] || EXTRACT_PROMPTS.job) +
         (text && String(text).trim() ? "\n\nTEXT:\n" + String(text).slice(0, 20000) : "\n\nRead the details from the attached image.");
 
       let out = "";
@@ -432,35 +439,30 @@ if (typeof window !== "undefined" && !window.storage) {
   /* ---------- Resume parsing with the site's own Gemini (Firebase AI Logic) ----------
      No user key: requests go to the Firebase project in firebase-config.js. The project
      must have Firebase AI Logic enabled with the Gemini Developer API (free on Spark). */
-  // Both stable. Flash-Lite reads a resume in ~2 s with the same result as 3.5 Flash (~20 s in testing); Flash is the fallback.
-  const PROJECT_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
   async function projectGemini(parts) {
-    const cfg = window.HV_FIREBASE_CONFIG;
-    if (!cfg || !cfg.apiKey || /PASTE/.test(cfg.apiKey)) return { error: "AI isn't set up for this site" };
-    let last = null;
-    const ac = window.HVCloud && window.HVCloud.appCheckToken ? await window.HVCloud.appCheckToken() : null;
-    for (const m of PROJECT_MODELS) {
-      const res = await fetchWithTimeout("https://firebasevertexai.googleapis.com/v1beta/projects/" + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", {
-        method: "POST",
-        headers: Object.assign({ "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey }, ac ? { "X-Firebase-AppCheck": ac } : {}),
-        body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }),
-      });
-      let j = {};
-      try { j = await res.json(); } catch (e) {}
-      if (res.ok && !j.error) {
-        const c = j.candidates && j.candidates[0];
-        return { ok: true, text: c && c.content && c.content.parts ? c.content.parts.map((x) => x.text || "").join("") : "" };
-      }
-      last = { status: res.status, message: (j.error && j.error.message) || "" };
-      if (res.status !== 404) break;                                        // only a missing model falls through to the next one
-    }
-    if (last && last.status === 403 && /disabled|not been used/i.test(last.message)) return { error: "AI resume reading isn't switched on for this site yet", disabled: true };
-    if (last && last.status === 401 && /app check/i.test(last.message)) {
-      return { error: ac ? "App Check couldn't verify this browser (try reloading, or turn off ad/tracker blockers)" : "AI resume reading is protected by App Check, which this site isn't set up for yet" };
-    }
-    if (last && last.status === 429) return { error: "AI is busy right now (rate limit) — try again in a minute" };
-    return { error: friendly(last ? last.status : 0, last && last.message) };
+    const C = window.HVCloud;
+    if (!C || !C.aiOn) return { error: "AI isn't set up for this site" };
+    const r = await C.gemini({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", temperature: 0.1 } });
+    return r.ok ? { ok: true, text: C.aiText(r.json) } : { error: r.error, disabled: r.disabled };
   }
+  const readJSON = (text) => {
+    const clean = String(text || "").replace(/```json|```/g, "").trim();
+    const a = clean.indexOf("{"), b = clean.lastIndexOf("}");
+    if (a === -1 || b === -1) return { error: "AI reply was not in the expected format" };
+    try { return { ok: true, data: JSON.parse(clean.slice(a, b + 1)) }; } catch (e) { return { error: "AI reply could not be read" }; }
+  };
+  /* job / company / profile details from text or a screenshot, with the built-in AI (no key) */
+  ipcMain.handle("hv:aiExtractProject", async (_e, { kind, text, imageBase64, imageMime }) => {
+    if ((!text || !String(text).trim()) && !imageBase64) return { error: "Nothing to analyze — paste text or add an image first" };
+    const parts = [{ text: extractPrompt(kind, text) }];
+    if (imageBase64) parts.push({ inlineData: { mimeType: imageMime || "image/png", data: imageBase64 } });
+    const r = await projectGemini(parts);
+    return r.ok ? readJSON(r.text) : r;
+  });
+  ipcMain.handle("hv:aiTestProject", async () => {
+    const r = await projectGemini([{ text: 'Reply with this JSON only: {"ok":true}' }]);
+    return r.ok ? { ok: true } : r;
+  });
   ipcMain.handle("hv:aiParseProject", async (_e, { text, pdfBase64 }) => {
     try {
       const t = String(text || "").trim();
@@ -502,6 +504,9 @@ if (typeof window !== "undefined" && !window.storage) {
     cloud: cloudApi,
     aiParse: call("hv:aiParse"),
     aiParseProject: call("hv:aiParseProject"),
+    aiExtractProject: call("hv:aiExtractProject"),
+    aiTestProject: call("hv:aiTestProject"),
+    get aiBuiltIn() { return !!(window.HVCloud && window.HVCloud.aiOn); },   // the site's built-in AI: every AI feature works without a key
     aiExtract: call("hv:aiExtract"),
     aiTest: call("hv:aiTest"),
     getAppVersion: async () => WEB_VERSION,

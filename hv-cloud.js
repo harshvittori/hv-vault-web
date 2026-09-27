@@ -4,7 +4,9 @@
    signed-in user read or write their own uid. Both apps run on the same site
    (harshvittori.github.io), so signing in to one signs in to the other.
    Config comes from firebase-config.js (window.HV_FIREBASE_CONFIG).
-   This exact code is also inlined in harsh-reset/index.html: keep both copies identical. */
+   HV Reset loads this same file (../hv-vault-web/hv-cloud.js).
+   It also carries the site's built-in AI (gemini): Firebase AI Logic on this project,
+   protected by App Check, so HV AI works for everyone without a personal key. */
 (function () {
   if (typeof window === "undefined" || window.HVCloud) return;
   if (window.storage && window.hv && window.hv.isDesktop !== false) return;   // Electron desktop app: never touch the cloud
@@ -65,6 +67,43 @@
     if (!r.ok) throw new Error("Cloud error " + r.status);
     return method === "DELETE" ? true : r.json();
   }
+  /* ---------- built-in AI (Firebase AI Logic, Gemini Developer API) ----------
+     Any Gemini generateContent body; a missing model (404) falls through to the next one. */
+  const AI_MODELS = ["gemini-3.1-flash-lite", "gemini-3.5-flash"];
+  const aiOn = () => !!(cfg && cfg.apiKey && cfg.projectId && !/PASTE/.test(cfg.apiKey));
+  function aiError(status, msg, hadAppCheck) {
+    if (status === 403 && /disabled|not been used/i.test(msg)) return "AI isn't switched on for this site yet";
+    if (status === 401 && /app check/i.test(msg)) return hadAppCheck ? "Couldn't verify this browser for AI. Reload the page, or turn off ad or tracker blockers" : "AI on this site needs App Check, which isn't set up here";
+    if (status === 429) return "HV AI is busy right now. Try again in a minute";
+    if (!status) return msg || "Couldn't reach the AI. Check your internet";
+    return "AI error (" + (msg || "HTTP " + status) + ")";
+  }
+  async function gemini(body, opts) {
+    const o = opts || {};
+    if (!aiOn()) return { ok: false, status: 0, json: {}, error: "AI isn't set up for this site" };
+    const ac = await appCheckToken();
+    let last = { status: 0, message: "", json: {} };
+    for (const m of o.models || AI_MODELS) {
+      const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), o.timeout || 45000);
+      let res, j = {};
+      try {
+        res = await fetch("https://firebasevertexai.googleapis.com/v1beta/projects/" + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", {
+          method: "POST", signal: ctrl.signal,
+          headers: Object.assign({ "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey }, ac ? { "X-Firebase-AppCheck": ac } : {}),
+          body: JSON.stringify(body),
+        });
+        try { j = await res.json(); } catch (e) {}
+      } catch (e) {
+        return { ok: false, status: 0, json: {}, error: e && e.name === "AbortError" ? "AI took too long. Try again" : "Couldn't reach the AI. Check your internet" };
+      } finally { clearTimeout(timer); }
+      if (res.ok && !j.error) return { ok: true, status: res.status, json: j, model: m };
+      last = { status: res.status, message: (j.error && j.error.message) || "", json: j };
+      if (res.status !== 404) break;
+    }
+    return { ok: false, status: last.status, json: last.json, message: last.message, disabled: last.status === 403 && /disabled|not been used/i.test(last.message), error: aiError(last.status, last.message, !!ac) };
+  }
+  const aiText = (j) => { const c = j && j.candidates && j.candidates[0]; return c && c.content && c.content.parts ? c.content.parts.map((x) => x.text || "").join("") : ""; };
+
   const str = (d, k) => (d && d.fields && d.fields[k] ? d.fields[k].stringValue || "" : "");
   const num = (d, k) => (d && d.fields && d.fields[k] ? Number(d.fields[k].integerValue || 0) : 0);
 
@@ -114,6 +153,7 @@
     },
     async signOut() { if (T) return T.auth.signOut(); if (auth) await auth.signOut(); },
     req, str, num, putValue, getValue, delValue, appCheckToken,
+    gemini, aiText, get aiOn() { return aiOn(); },
     get appCheckOn() { return !!appCheck; },
   };
   init();

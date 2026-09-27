@@ -164,7 +164,20 @@
     } catch (e) { return { status: 0, ok: false, json: { error: { message: e && e.name === "AbortError" ? "timed out" : "network error" } } }; }
     finally { clearTimeout(t); }
   }
+  /* The site's built-in AI (HVCloud.gemini: Firebase AI Logic + App Check) needs no key; on the website it is
+     the only AI. A personal key is used only where there is no built-in AI (the desktop app). */
+  const builtInAI = () => !!(typeof window !== "undefined" && window.HVCloud && window.HVCloud.aiOn);
+  const pickConfig = (st) => (builtInAI() ? { provider: "builtin" } : { provider: st && st.aiProvider, key: st && st.aiKey, model: st && st.aiModel });
+  const hasAI = (c) => !!(c && (c.provider === "builtin" || (c.key && c.provider && c.provider !== "off")));
+  async function callGemini(cfg, model, body, ms) {
+    if (cfg.provider === "builtin") {
+      const r = await window.HVCloud.gemini(body, { models: model ? [model] : undefined, timeout: ms || 45000 });
+      return { ok: r.ok, status: r.status, json: r.json || {}, builtinError: r.ok ? "" : r.error };
+    }
+    return post("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model || DEFAULT_GEMINI) + ":generateContent?key=" + encodeURIComponent(cfg.key), body, null, ms);
+  }
   const friendlyErr = (r) => {
+    if (r.builtinError) return r.builtinError;
     const m = (r.json && r.json.error && (r.json.error.message || r.json.error)) || "";
     if (r.status === 400 && /api key/i.test(m)) return "Your AI key was rejected. Check it in HV Vault > Settings > HV AI.";
     if (r.status === 401 || r.status === 403) return "Your AI key isn't allowed (" + (m || r.status) + "). Check it in HV Vault > Settings > HV AI.";
@@ -176,16 +189,31 @@
   async function geminiActions(cfg, userText, context, history, model, scope) {
     const contents = (history || []).slice(-8).map((h) => ({ role: h.role === "user" ? "user" : "model", parts: [{ text: h.text }] }));
     contents.push({ role: "user", parts: [{ text: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nHARSH SAYS:\n" + userText }] });
-    const r = await post("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(cfg.key), {
+    const r = await callGemini(cfg, model, {
       systemInstruction: { parts: [{ text: scope.system }] }, contents,
       tools: [{ functionDeclarations: scope.tools.map((t) => ({ name: t.name, description: t.description, parameters: upperType(t.parameters) })) }],
       toolConfig: { functionCallingConfig: { mode: "ANY" } }, generationConfig: { temperature: 0.1 },
     });
+    if (!r.ok && r.status === 400 && cfg.provider === "builtin") return jsonActions(cfg, contents, model, scope);   // function calling refused: same request as strict JSON
     if (!r.ok) return { error: friendlyErr(r), status: r.status };
     const parts = (r.json.candidates && r.json.candidates[0] && r.json.candidates[0].content && r.json.candidates[0].content.parts) || [];
     const calls = parts.filter((p) => p.functionCall).map((p) => ({ type: p.functionCall.name, args: p.functionCall.args || {} }));
     const text = parts.map((p) => p.text || "").join("").trim();
     if (!calls.length && text) calls.push({ type: "answer", args: { text } });
+    return { actions: calls };
+  }
+  /* strict-JSON mode: the functions are described in the prompt and the reply is {"actions":[{type,args}]} */
+  async function jsonActions(cfg, contents, model, scope) {
+    const spec = scope.tools.map((t) => "- " + t.name + ": " + t.description + " args: " + JSON.stringify(t.parameters.properties || {})).join("\n");
+    const r = await callGemini(cfg, model, {
+      systemInstruction: { parts: [{ text: scope.system + "\nReply with ONLY a JSON object {\"actions\":[{\"type\":<function name>,\"args\":{...}}]} using only these functions:\n" + spec }] },
+      contents, generationConfig: { temperature: 0.1, responseMimeType: "application/json" },
+    });
+    if (!r.ok) return { error: friendlyErr(r), status: r.status };
+    const text = ((r.json.candidates && r.json.candidates[0] && r.json.candidates[0].content && r.json.candidates[0].content.parts) || []).map((p) => p.text || "").join("");
+    const calls = [];
+    try { const j = JSON.parse(text.replace(/```json|```/g, "").trim()); (j.actions || []).forEach((x) => x && x.type && calls.push({ type: x.type, args: x.args || {} })); }
+    catch (e) { if (text.trim()) calls.push({ type: "answer", args: { text: text.trim().slice(0, 600) } }); }
     return { actions: calls };
   }
   async function openrouterActions(cfg, userText, context, history, model, scope) {
@@ -205,7 +233,7 @@
     return { actions: calls };
   }
   async function interpret(cfg, userText, context, history, app) {
-    if (!cfg || !cfg.key || !cfg.provider || cfg.provider === "off") return { error: "NO_KEY" };
+    if (!hasAI(cfg)) return { error: "NO_KEY" };
     const scope = scopeOf(app);
     if (cfg.provider === "openrouter") { const o = await openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR, scope); return o && o.actions ? Object.assign({}, o, { actions: o.actions.map(normalize) }) : o; }
     const model = cfg.model || DEFAULT_GEMINI;
@@ -219,12 +247,12 @@
     return r;
   }
   async function transcribe(cfg, wavB64) {
-    const r = await post("https://generativelanguage.googleapis.com/v1beta/models/" + encodeURIComponent(cfg.model || DEFAULT_GEMINI) + ":generateContent?key=" + encodeURIComponent(cfg.key), {
+    const r = await callGemini(cfg, cfg.provider === "builtin" ? null : cfg.model || DEFAULT_GEMINI, {
       contents: [{ role: "user", parts: [
         { text: "Transcribe this voice note exactly as spoken. It may be Hindi, English or Hinglish. Write Hindi words in Latin script (Hinglish), keep English words in English, keep names, numbers and links. Output only the transcript." },
         { inlineData: { mimeType: "audio/wav", data: wavB64 } }] }],
       generationConfig: { temperature: 0 },
-    }, null, 60000);
+    }, 60000);
     if (!r.ok) return { error: friendlyErr(r) };
     const parts = (r.json.candidates && r.json.candidates[0] && r.json.candidates[0].content && r.json.candidates[0].content.parts) || [];
     return { text: parts.map((p) => p.text || "").join("").trim() };
@@ -600,7 +628,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (!log.childElementCount) {
         history.slice(-20).forEach((h) => add("hvai-msg " + (h.role === "user" ? "me" : "ai"), esc(h.text)));
         const c = cfg();
-        if (!c.key || !c.provider || c.provider === "off") say("ai", host.keyHelp || "HV AI needs an AI key. Open HV Vault > Settings > HV AI, paste your Gemini key (free from aistudio.google.com) and save. Then come back here.", false);
+        if (!hasAI(c)) say("ai", host.keyHelp || "HV AI needs an AI key. Open HV Vault > Settings > HV AI, paste your Gemini key (free from aistudio.google.com) and save. Then come back here.", false);
         else say("ai", "Bolo " + firstName() + ", kya karna hai?", false);
       }
       setTimeout(() => input.focus(), 50);
@@ -713,7 +741,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       input.value = ""; grow();
       const c = cfg();
       say("user", text);
-      if (!c.key || !c.provider || c.provider === "off") { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
+      if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       busy = true; send.disabled = true; const typing = add("hvai-typing", "HV AI is thinking…");
       let r;
       try { r = await interpret(c, text, host.getContext(), history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
@@ -741,8 +769,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     async function micDown(e) {
       e.preventDefault(); if (busy) return;
       const c = cfg();
-      if (!c.key || c.provider === "off" || !c.provider) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
-      if (c.provider === "gemini" && canRecord()) {
+      if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
+      if ((c.provider === "gemini" || c.provider === "builtin") && canRecord()) {   // Gemini hears the audio itself
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           chunks = []; rec = new MediaRecorder(stream); rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
@@ -789,5 +817,5 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     return { open, close, run, showActions, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
   }
 
-  root.HVAI = { version: 1, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
+  root.HVAI = { version: 1, pickConfig, builtInAI, hasAI, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
 })(typeof window !== "undefined" ? window : globalThis);

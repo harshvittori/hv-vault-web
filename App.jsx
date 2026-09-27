@@ -4575,7 +4575,7 @@ function StyleBlock() {
   --grad:linear-gradient(135deg,#4F66E0 0%,#7C5CE0 100%);
   --chart-grid:rgba(30,42,80,.08); --shadow:0 12px 32px -14px rgba(40,50,90,.22),0 2px 6px rgba(40,50,90,.05);
   --shadow-lg:0 30px 80px -24px rgba(40,50,80,.38); --focus:#4058C8;
-  --hover:rgba(255,255,255,.62); --sidebar-bg:rgba(255,255,255,.34);
+  --hover:rgba(255,255,255,.62); --sidebar-bg:rgba(255,255,255,.34); --card-touch:rgba(255,255,255,.7);
   --scroll-thumb:rgba(40,52,90,.22); --scroll-thumb-hover:rgba(40,52,90,.36); --scroll-track:rgba(40,52,90,.04);
 }
 .app[data-theme="dark"]{
@@ -4588,7 +4588,7 @@ function StyleBlock() {
   --accent:#A3B6FF; --accent-deep:#7F95F0; --green:#6FD6A0; --lav:#B9A6FF; --gold:#F2C063;
   --amber:#F2B35E; --red:#F08A8A; --teal:#72C9D4;
   --chart-grid:rgba(255,255,255,.08); --shadow:0 16px 40px -16px rgba(0,0,0,.6);
-  --shadow-lg:0 40px 90px -20px rgba(0,0,0,.65); --hover:rgba(255,255,255,.09); --sidebar-bg:rgba(8,12,28,.34);
+  --shadow-lg:0 40px 90px -20px rgba(0,0,0,.65); --hover:rgba(255,255,255,.09); --sidebar-bg:rgba(8,12,28,.34); --card-touch:rgba(32,38,70,.6);
   --scroll-thumb:rgba(255,255,255,.18); --scroll-thumb-hover:rgba(255,255,255,.3); --scroll-track:rgba(255,255,255,.035);
 }
 *{box-sizing:border-box;margin:0;padding:0}
@@ -5174,9 +5174,18 @@ h1,h2,h3,.brand-name,.stat-value,.ac-title,.card-title{font-family:'Sora','Inter
 
 .loading-screen{color:var(--slate);font-family:'Sora',sans-serif;font-weight:300;font-size:16px}
 
+/* Phones and touch screens: blur is re-rendered every scroll frame, so repeated tiles use
+   more opaque glass without blur, the sky stops drifting, and the sky is sized to the large
+   viewport so the collapsing address bar doesn't make it jump. */
+@media (hover:none),(max-width:900px){
+  .hv-sky{bottom:auto;height:100vh;height:100lvh;transform:translateZ(0)}
+  .hv-sky i{animation:none!important;will-change:auto}
+  .sidebar,.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.btn-ghost,.chip-btn,.stage-pill,.hero-chip{
+    -webkit-backdrop-filter:none;backdrop-filter:none;background-color:var(--card-touch)}
+  .topbar{-webkit-backdrop-filter:blur(16px) saturate(150%);backdrop-filter:blur(16px) saturate(150%)}
+  .stat:not(:disabled):hover,.kcard:hover,.nav-item:hover,.btn-ghost:hover,.btn-primary:hover:not(:disabled){transform:none}
+}
 @media(max-width:640px){
-  .sidebar,.topbar,.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.btn-ghost,.chip-btn,.stage-pill,.hero-chip{
-    -webkit-backdrop-filter:blur(14px) saturate(150%);backdrop-filter:blur(14px) saturate(150%)}
   .stat-value{font-size:34px}
   .stat{padding:18px 10px 14px}
   .hero{margin-bottom:26px}

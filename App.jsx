@@ -4005,6 +4005,7 @@ function CloudSyncCard({ notify }) {
             <button className="btn btn-ghost btn-sm" onClick={() => cloud.syncNow()}>Sync now</button>
             <button className="btn btn-ghost btn-sm" onClick={() => cloud.signOut()}>Sign out</button>
           </div>
+          <p className="muted small" style={{ marginTop: 8 }}>Signing out removes your data from this browser. It stays safe in your Google account.</p>
         </>
       )}
     </div>

@@ -3,8 +3,10 @@
    runs inside the desktop app. In a browser it provides:
      window.storage   IndexedDB on this device, plus optional cloud sync (Google login)
      window.hv        AI calls from the browser, backup download/restore, cloud controls
-   Cloud sync: every change is saved locally first, then pushed to the signed-in user's
-   own Firestore space. Other devices pull changes every 15 seconds and on focus.
+   Cloud sync: signing in with Google is required on the web (see auth-gate.jsx). The
+   Google account is the home of the data; IndexedDB is only this device's cache of it
+   and is wiped on sign-out. Every change is saved to the cache first, then pushed to the
+   signed-in user's own Firestore space. Other devices pull changes every 15 seconds and on focus.
    Conflicts resolve per key, newest wins. A device joining an account never silently
    overwrites real data: if both sides have data, the user chooses. */
 import "./hv-cloud.js";
@@ -47,7 +49,7 @@ if (typeof window !== "undefined" && !window.storage) {
   const docPath = (k) => "hv/" + encodeURIComponent(k);
 
   const Q = new Set(); let pushTimer = null, busy = false, pollTimer = null;
-  const status = { state: "off", last: 0, error: "" };
+  const status = { state: "off", last: 0, error: "", ready: false };   // ready: this account's data is loaded on this device
   const statusSubs = new Set();
   const setStatus = (state, error) => { status.state = state; status.error = error || ""; if (state === "synced") status.last = Date.now(); statusSubs.forEach((cb) => { try { cb({ ...status }); } catch (e) {} }); };
   const C = () => window.HVCloud;
@@ -84,7 +86,7 @@ if (typeof window !== "undefined" && !window.storage) {
     finally { busy = false; }
   }
   async function pull() {
-    if (!linked() || busy) return;
+    if (!linked() || busy) return false;
     busy = true; setStatus("syncing");
     let changed = 0, main = false;
     try {
@@ -103,10 +105,11 @@ if (typeof window !== "undefined" && !window.storage) {
       }
       for (const [k, m] of Object.entries(meta.keys)) { const r = remote[k]; if (!r || m.t > r.t) Q.add(k); }
       saveMeta(); setStatus("synced");
-    } catch (e) { setStatus("error", e.message); }
+    } catch (e) { setStatus("error", e.message); return false; }
     finally { busy = false; }
     if (Q.size) schedulePush();
     if (changed) window.dispatchEvent(new CustomEvent("hv-remote-update", { detail: { main } }));
+    return true;
   }
   async function join(u) {
     setStatus("syncing");
@@ -124,7 +127,10 @@ if (typeof window !== "undefined" && !window.storage) {
     if (adopt) {
       if (localHas) { try { localStorage.setItem("hv-local-backup", localMain); } catch (e) {} }
       meta = { uid: u.uid, keys: {} }; saveMeta();
-      busy = false; await pull();
+      busy = false;
+      // Never open the app on an empty cache when the account has data: it would save
+      // "empty" and overwrite the cloud. Unlink so the next attempt joins again.
+      if (!(await pull())) { meta = { uid: null, keys: {} }; saveMeta(); throw new Error(status.error || "Could not download your data"); }
     } else {
       const now = Date.now(); meta = { uid: u.uid, keys: {} };
       for (const k of (await idbKeys()).filter((k) => !localOnly(k))) {
@@ -141,10 +147,24 @@ if (typeof window !== "undefined" && !window.storage) {
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pull(); });
   window.addEventListener("focus", () => pull());
-  if (C()) C().onChange(async (u) => {
-    if (!u) { clearInterval(pollTimer); setStatus("off"); return; }
-    try { if (meta.uid === u.uid) await pull(); else await join(u); startPolling(); }
-    catch (e) { setStatus("error", e.message); }
+  async function wipeLocal() {
+    for (const k of await idbKeys()) await idbDel(k);
+    meta = { uid: null, keys: {} }; saveMeta();
+    try { localStorage.removeItem("hv-local-backup"); localStorage.removeItem("hv-reset-linked"); } catch (e) {}
+  }
+  async function connect(u) {
+    status.ready = false; setStatus("syncing");
+    try {
+      if (meta.uid && meta.uid !== u.uid) await wipeLocal();   // another account used this browser before
+      if (meta.uid === u.uid) await pull();                    // returning device: the cache is valid even if offline
+      else await join(u);
+      startPolling();
+      status.ready = true; setStatus(status.state, status.error);
+    } catch (e) { setStatus("error", e.message); }
+  }
+  if (C()) C().onChange((u) => {
+    if (!u) { clearInterval(pollTimer); status.ready = false; setStatus("off"); return; }
+    connect(u);
   });
 
   window.storage = {
@@ -176,8 +196,18 @@ if (typeof window !== "undefined" && !window.storage) {
     status: () => ({ ...status }),
     onStatus(cb) { statusSubs.add(cb); return () => statusSubs.delete(cb); },
     onUser(cb) { return C() ? C().onChange(cb) : () => {}; },
+    authReady: () => (C() ? C().ready : Promise.resolve()),
     signIn: () => C().signIn(),
-    signOut: () => C().signOut(),
+    retry: () => (C() && C().user ? connect(C().user) : Promise.resolve()),
+    // Sign-out removes the data from this browser; it stays in the Google account.
+    async signOut() {
+      if (status.ready) { try { await flush(); } catch (e) {} }
+      if (Q.size && !window.confirm("Some recent changes haven't reached your Google account yet (no connection?).\n\nSign out anyway and lose them?")) return;
+      clearInterval(pollTimer);
+      await C().signOut();
+      await wipeLocal();
+      location.reload();
+    },
     syncNow: async () => { await pull(); await flush(); },
   };
 

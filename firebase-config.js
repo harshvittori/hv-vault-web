@@ -6,8 +6,8 @@ window.HV_FIREBASE_CONFIG = {
   authDomain: "harsh-reset.firebaseapp.com",
   projectId: "harsh-reset",
   appId: "1:592094409539:web:57d3aa494464b867bbf5f6",
-  // App Check: paste the reCAPTCHA v3 *site* key (public) here once the web app is registered in
-  // Firebase console > App Check. Leave empty to run without App Check. Never put the secret key here.
-  appCheckSiteKey: "",
-  appCheckProvider: "v3",   // "v3" or "enterprise"
+  // App Check: public reCAPTCHA Enterprise site key registered for this web app in Firebase console >
+  // App Check (key restricted to harshvittori.github.io). Leave empty to run without App Check.
+  appCheckSiteKey: "6LdZltEtAAAAANC5e-PJFqs2YrM1ubR3CKv0sOhl",
+  appCheckProvider: "enterprise",   // "v3" or "enterprise"
 };

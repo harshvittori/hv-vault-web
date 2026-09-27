@@ -109,6 +109,7 @@ if (typeof window !== "undefined" && !window.storage) {
     finally { busy = false; }
     if (Q.size) schedulePush();
     if (changed) window.dispatchEvent(new CustomEvent("hv-remote-update", { detail: { main } }));
+    processInbox();
     return true;
   }
   async function join(u) {
@@ -149,6 +150,47 @@ if (typeof window !== "undefined" && !window.storage) {
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) pull(); });
   window.addEventListener("focus", () => pull());
+  /* ---------- Harsh Reset inbox ----------
+     Reset appends actions (one field per action, a_<id>) to users/{uid}/apps/inbox, or to the
+     same-browser localStorage "hv-inbox" when signed out. The app applies them to its own data
+     (setInboxHandler), the result is pushed, then exactly the processed entries are removed, so
+     an action Reset adds meanwhile is never lost. */
+  const LINBOX = "hv-inbox";
+  let inboxHandler = null, inboxBusy = false, inboxAgain = false;
+  const readLocalInbox = () => { try { const a = JSON.parse(localStorage.getItem(LINBOX) || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
+  async function processInbox() {
+    if (!inboxHandler) return;
+    if (inboxBusy) { inboxAgain = true; return; }
+    inboxBusy = true;
+    try {
+      const cloud = [], bad = [];
+      if (linked()) {
+        const doc = await C().req("GET", "apps/inbox");
+        Object.entries((doc && doc.fields) || {}).forEach(([k, v]) => {
+          if (!/^a_/.test(k)) return;
+          try { cloud.push({ ...JSON.parse(v.stringValue), _f: k }); } catch (e) { bad.push(k); }
+        });
+      }
+      const local = readLocalInbox();
+      const all = [...cloud, ...local].sort((a, b) => (a.t || 0) - (b.t || 0));
+      if (all.length) {
+        await inboxHandler(all);
+        if (!busy) await flush();
+      }
+      const clear = [...cloud.map((a) => a._f), ...bad];
+      if (clear.length) await C().req("PATCH", "apps/inbox?" + clear.map((f) => "updateMask.fieldPaths=" + encodeURIComponent(f)).join("&"), { fields: {} });
+      if (local.length) {
+        const done = new Set(local.map((a) => a.id));
+        try { localStorage.setItem(LINBOX, JSON.stringify(readLocalInbox().filter((a) => !done.has(a.id)))); } catch (e) {}
+      }
+    } catch (e) { /* retried on the next sync */ }
+    finally {
+      inboxBusy = false;
+      if (inboxAgain) { inboxAgain = false; setTimeout(processInbox, 200); }
+    }
+  }
+  window.addEventListener("storage", (e) => { if (e.key === LINBOX) processInbox(); });
+
   async function wipeLocal() {
     for (const k of await idbKeys()) await idbDel(k);
     meta = { uid: null, keys: {} }; saveMeta();
@@ -162,6 +204,7 @@ if (typeof window !== "undefined" && !window.storage) {
       else await join(u);
       startPolling();
       status.ready = true; setStatus(status.state, status.error);
+      processInbox();
     } catch (e) { setStatus("error", e.message); }
   }
   if (C()) C().onChange((u) => {
@@ -199,6 +242,7 @@ if (typeof window !== "undefined" && !window.storage) {
     onStatus(cb) { statusSubs.add(cb); return () => statusSubs.delete(cb); },
     onUser(cb) { return C() ? C().onChange(cb) : () => {}; },
     authReady: () => (C() ? C().ready : Promise.resolve()),
+    setInboxHandler(fn) { inboxHandler = fn; if (fn) processInbox(); },
     signIn: () => C().signIn(),
     retry: () => (C() && C().user ? connect(C().user) : Promise.resolve()),
     // Sign-out removes the data from this browser; it stays in the Google account.

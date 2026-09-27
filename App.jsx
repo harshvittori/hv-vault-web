@@ -9,6 +9,7 @@ import {
   Tag as TagIcon, Moon, Sun, FileText, Star, BookOpen, ListTodo, MessageSquareText,
   Sparkles, Eye, Files, AlarmClock, CircleDot, GraduationCap, Zap, User, Wand2, Image as ImageIcon, CalendarDays, ChevronLeft, RotateCcw,
 } from "lucide-react";
+import "./shared/apply-rule.js";   // window.HVApplyRule: the 2-minute apply rule shared with Harsh Reset
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import mammoth from "mammoth/mammoth.browser";
@@ -667,6 +668,20 @@ export default function HVVault() {
     })();
   }, []);
 
+  // Harsh Reset inbox: the sync engine hands over queued actions; apply them to the data, save, then it clears them.
+  const hasData = !!data;
+  useEffect(() => {
+    const cloud = typeof window !== "undefined" && window.hv && window.hv.cloud;
+    if (!hasData || !cloud || !cloud.setInboxHandler) return;
+    cloud.setInboxHandler(async (actions) => {
+      const next = await new Promise((res) => setData((d) => { const n = applyInbox(d, actions); res(n); return n; }));
+      await window.storage.set(STORAGE_KEY, JSON.stringify(next));
+      const n = actions.filter((a) => a && (a.type === "log" || a.type === "applied")).length;
+      if (n) notify(n === 1 ? "Harsh Reset logged an application" : "Harsh Reset logged " + n + " applications");
+    });
+    return () => cloud.setInboxHandler(null);
+  }, [hasData]);
+
   // Cloud sync: another device changed the data -> reload it here without a page refresh.
   useEffect(() => {
     const onRemote = async (e) => {
@@ -705,24 +720,7 @@ export default function HVVault() {
   const companyName = (id) => data.companies.find((c) => c.id === id)?.name || "—";
 
   const moveJob = (jobId, stage) => {
-    setData((d) => {
-      const job = d.jobs.find((j) => j.id === jobId);
-      if (!job || job.status === stage) return d;
-      const timeline = [...(job.timeline || []), { date: todayISO(), event: "Moved to " + stage }];
-      const updated = { ...job, status: stage, timeline, updated_at: todayISO() };
-      if (RESPONSE_STAGES.includes(stage) && !updated.response_date) updated.response_date = todayISO();
-      let followups = d.followups;
-      if (stage === "Applied") {
-        updated.date_applied = updated.date_applied || todayISO();
-        const gap = Number(d.settings.followupGap) || 7;
-        followups = [...followups, {
-          id: uid(), title: "First follow-up", job_id: job.id, company_id: job.company_id,
-          contact_name: "", type: "Email", due_date: addDays(todayISO(), gap), status: "Pending",
-          message_draft: "", notes: "Auto-created: follow up " + gap + " days after applying.",
-        }];
-      }
-      return { ...d, jobs: d.jobs.map((j) => (j.id === jobId ? updated : j)), followups };
-    });
+    setData((d) => stageJob(d, jobId, stage));
     if (stage === "Applied") notify("Applied — follow-up reminder set. Keep the pipeline moving.");
     else if (stage === "Offer") notify("Offer! 🎉 Prepare your negotiation notes.");
     else notify("Moved to " + stage);
@@ -938,6 +936,88 @@ export default function HVVault() {
   );
 }
 
+
+/* Move a job to a stage (pure). Moving to Applied stamps the date and creates the first
+   follow-up. Used by moveJob and by actions from Harsh Reset (day = the local date it happened). */
+function stageJob(d, jobId, stage, day, via) {
+  const job = d.jobs.find((j) => j.id === jobId);
+  if (!job || job.status === stage) return d;
+  const on = day || todayISO();
+  const timeline = [...(job.timeline || []), { date: on, event: "Moved to " + stage + (via ? " (" + via + ")" : "") }];
+  const updated = { ...job, status: stage, timeline, updated_at: todayISO() };
+  if (RESPONSE_STAGES.includes(stage) && !updated.response_date) updated.response_date = on;
+  let followups = d.followups;
+  if (stage === "Applied") {
+    updated.date_applied = updated.date_applied || on;
+    const gap = Number(d.settings.followupGap) || 7;
+    followups = [...followups, {
+      id: uid(), title: "First follow-up", job_id: job.id, company_id: job.company_id,
+      contact_name: "", type: "Email", due_date: addDays(on, gap), status: "Pending",
+      message_draft: "", notes: "Auto-created: follow up " + gap + " days after applying.",
+    }];
+  }
+  return { ...d, jobs: d.jobs.map((j) => (j.id === jobId ? updated : j)), followups };
+}
+
+/* ---- Harsh Reset inbox ----
+   Reset never writes HV Vault's data. It appends actions to users/{uid}/apps/inbox (or the
+   same-browser localStorage "hv-inbox" when signed out); HV Vault applies them here and the
+   sync engine clears them. Applied action ids are remembered, so an action can't apply twice. */
+const normLink = (u) => String(u || "").trim().toLowerCase()
+  .replace(/^https?:\/\//, "").replace(/^www\./, "").replace(/#.*$/, "")
+  .replace(/([?&])(utm_[^=&]*|trk[^=&]*|refid|trackingid|ref|src)=[^&]*/g, "$1").replace(/[?&]+$/, "").replace(/\/+$/, "");
+const sameText = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+function applyInbox(d0, actions) {
+  const seen = new Set(d0.settings.inboxDone || []);
+  let d = d0, applied = 0;
+  const toApplied = (dd, job, day) => (PRE_APPLY.includes(job.status) || !job.status ? stageJob(dd, job.id, "Applied", day, "from Harsh Reset") : dd);
+  for (const a of actions) {
+    if (!a || !a.id || seen.has(a.id)) continue;
+    seen.add(a.id);
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(a.date || "") ? a.date : todayISO();
+    if (a.type === "log") {
+      const link = normLink(a.link);
+      const company = d.companies.find((c) => sameText(c.name, a.company));
+      let job = (link && d.jobs.find((j) => normLink(j.job_link) === link))
+        || (company && a.role && d.jobs.find((j) => j.company_id === company.id && sameText(j.title, a.role)));
+      if (job) {                                                      // update instead of duplicating
+        const patch = {};
+        if (!job.job_link && a.link) patch.job_link = a.link;
+        if (!job.source && a.source) patch.source = a.source;
+        if (Object.keys(patch).length) { d = { ...d, jobs: d.jobs.map((j) => (j.id === job.id ? { ...j, ...patch } : j)) }; job = { ...job, ...patch }; }
+        d = toApplied(d, job, day);
+      } else {
+        let companyId = company && company.id;
+        if (!companyId) {
+          companyId = uid();
+          d = { ...d, companies: [...d.companies, {
+            id: companyId, name: String(a.company || "Unknown company").trim(), website: "", career_page: "", linkedin: "", location: "", industry: "",
+            size: "", hiring_status: "Unknown", priority: "Medium", status: "To Research", tags: [], notes: "Added from Harsh Reset.",
+            contact_name: "", contact_email: "", recruiter_linkedin: "", last_checked_date: day, next_check_date: "", rating: "", created_at: day,
+          }] };
+        }
+        const id = uid();
+        d = { ...d, jobs: [...d.jobs, {
+          id, company_id: companyId, title: String(a.role || "Untitled role").trim(), source: a.source || "", job_link: a.link || "", location: "",
+          work_mode: "", job_type: "Full-time", salary_range: "", experience_required: "", skills_required: "", description: "", deadline: "",
+          priority: "Medium", fit_score: "", excitement_score: "", status: "Saved", tags: [], notes: "Logged from Harsh Reset.",
+          date_saved: day, date_applied: "", interview_date: "", resume_id: "", cover_id: "", resume_attached_date: "", resume_verdict: "",
+          timeline: [{ date: day, event: "Job saved (Harsh Reset)" }], prep_done: [],
+        }] };
+        d = stageJob(d, id, "Applied", day, "from Harsh Reset");
+      }
+      applied++;
+    } else if (a.type === "applied") {
+      const job = d.jobs.find((j) => j.id === a.jobId);
+      if (job) { d = toApplied(d, job, day); applied++; }
+    } else if (a.type === "fu_done") {
+      const f = d.followups.find((x) => x.id === a.followupId);
+      if (f && f.status !== "Done") d = { ...d, followups: d.followups.map((x) => (x.id === f.id ? { ...x, status: "Done", sent_date: x.sent_date || day, completed_date: day } : x)) };
+    }
+  }
+  if (d === d0 && seen.size === (d0.settings.inboxDone || []).length) return d0;
+  return { ...d, settings: { ...d.settings, inboxDone: [...seen].slice(-400) } };
+}
 
 /* Save a parsed/entered profile into the data: settings used across the app, the profile
    record, and (optionally) a master-resume entry with the long sections. */
@@ -2087,26 +2167,7 @@ function JobsPage({ data, setModal, remove, openDetail, companyName }) {
    so when it has been used in this browser its data is visible here. The apply rule
    below mirrors Reset's "2-minute apply rule" and only appears when Reset is present. */
 const HAS_RESET = () => { try { return IS_WEB() && (localStorage.getItem("harsh-reset-v1") !== null || localStorage.getItem("hv-reset-linked") === "1"); } catch (e) { return false; } };
-const RESET_ROLE_RE = /\b(gtm|go[- ]to[- ]market|growth|founder'?s office|business development|bd[ar]?|partnerships?|rev(enue)?[ -]?ops|revenue operations)\b/i;
-function resetRuleCheck(f) {
-  const title = (f.title || "") + " " + (f.description || "").slice(0, 300);
-  const role = RESET_ROLE_RE.test(title) ? "pass" : "warn";
-  const expText = (f.experience_required || "") + " " + (f.description || "");
-  const m = expText.match(/(\d{1,2})\s*(?:\+|-|–|to)?\s*(?:\d{1,2})?\s*\+?\s*(?:years?|yrs?)/i);
-  const exp = !m ? "warn" : Number(m[1]) >= 4 ? "fail" : "pass";
-  const loc = ((f.location || "") + " " + (f.work_mode || "")).toLowerCase();
-  const place = /mumbai/.test(loc) ? "fail"
-    : /delhi|ncr|gurgaon|gurugram|noida|jaipur|agra|remote/.test(loc) ? "pass"
-    : /bengaluru|bangalore|pune/.test(loc) ? "warn" : "warn";
-  const rows = [
-    ["Role family", role, role === "pass" ? "GTM / growth / founder's office / BD / partnerships / rev ops" : "Title doesn't clearly match your role family"],
-    ["Experience", exp, exp === "fail" ? "Asks 4+ years. Skip." : exp === "pass" ? "3 years or less" : "Not stated. Check the JD"],
-    ["Location", place, place === "fail" ? "Mumbai. Skip." : place === "pass" ? "In your list" : /bengaluru|bangalore|pune/.test(loc) ? "Bengaluru/Pune: only for a strong fit" : "Outside your list or not set"],
-    ["Stories", "warn", "Do you have real stories for 2 of the top 3 duties?"],
-  ];
-  const verdict = rows.some((r) => r[1] === "fail") ? "fail" : rows.slice(0, 3).every((r) => r[1] === "pass") ? "pass" : "warn";
-  return { rows, verdict };
-}
+function resetRuleCheck(f) { return window.HVApplyRule.check(f); }   // defined once in shared/apply-rule.js
 function ResetRuleCheck({ job }) {
   if (!HAS_RESET()) return null;
   const { rows, verdict } = resetRuleCheck(job);
@@ -4265,6 +4326,15 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.7.0": {
+    title: "HV Vault and Harsh Reset, one system",
+    points: [
+      "Log an application in Harsh Reset and it lands here as Applied, with its first follow-up",
+      "Reset shows your saved jobs as an apply queue, sorted by the 2-minute apply rule",
+      "Mark follow-ups done from Reset; its counter and weekly review read from HV Vault",
+      "One apply rule for both apps, so the rule text and the check always agree",
+    ],
+  },
   "2.6.0": {
     title: "Guided profile setup",
     points: [

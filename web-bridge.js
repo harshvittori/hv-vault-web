@@ -394,10 +394,11 @@ if (typeof window !== "undefined" && !window.storage) {
     const cfg = window.HV_FIREBASE_CONFIG;
     if (!cfg || !cfg.apiKey || /PASTE/.test(cfg.apiKey)) return { error: "AI isn't set up for this site" };
     let last = null;
+    const ac = window.HVCloud && window.HVCloud.appCheckToken ? await window.HVCloud.appCheckToken() : null;
     for (const m of PROJECT_MODELS) {
       const res = await fetchWithTimeout("https://firebasevertexai.googleapis.com/v1beta/projects/" + encodeURIComponent(cfg.projectId) + "/models/" + m + ":generateContent", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey },
+        headers: Object.assign({ "Content-Type": "application/json", "x-goog-api-key": cfg.apiKey }, ac ? { "X-Firebase-AppCheck": ac } : {}),
         body: JSON.stringify({ contents: [{ role: "user", parts }], generationConfig: { responseMimeType: "application/json", temperature: 0.1 } }),
       });
       let j = {};
@@ -410,6 +411,9 @@ if (typeof window !== "undefined" && !window.storage) {
       if (res.status !== 404) break;                                        // only a missing model falls through to the next one
     }
     if (last && last.status === 403 && /disabled|not been used/i.test(last.message)) return { error: "AI resume reading isn't switched on for this site yet", disabled: true };
+    if (last && last.status === 401 && /app check/i.test(last.message)) {
+      return { error: ac ? "App Check couldn't verify this browser (try reloading, or turn off ad/tracker blockers)" : "AI resume reading is protected by App Check, which this site isn't set up for yet" };
+    }
     if (last && last.status === 429) return { error: "AI is busy right now (rate limit) — try again in a minute" };
     return { error: friendly(last ? last.status : 0, last && last.message) };
   }

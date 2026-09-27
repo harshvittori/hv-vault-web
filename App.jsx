@@ -4498,6 +4498,15 @@ function runParse(st, text) {        // resume text → profile fields
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.9.1": {
+    title: "HV AI, sharper",
+    points: [
+      "HV AI never guesses a date: \"Cred ke saath interview schedule karo\" now asks when, instead of picking a day",
+      "Day plans keep every work block to 90 minutes at most, with a short break in between",
+      "HV AI knows \"is hafte\" (this week, from Monday) and \"pichle 7 din\" (the last 7 days) apart",
+      "Fixed: pop-up messages (like \"Jobs exported\") were blank in dark mode",
+    ],
+  },
   "2.9.0": {
     title: "HV AI, ready out of the box",
     points: [
@@ -4821,7 +4830,7 @@ function HVAISelfTest({ settings }) {
           <div key={i} style={{ borderTop: i ? "1px solid var(--line)" : 0, padding: "7px 0", fontSize: 13 }}>
             <div><span style={{ color: r.ok ? "var(--green)" : "var(--red)", fontWeight: 700 }}>{r.ok ? "PASS" : "FAIL"}</span> <span className="muted">[{t.lang}]</span> {t.cmd}</div>
             <div className="muted">Expected: {r.why}{r.ms ? " · " + (r.ms / 1000).toFixed(1) + "s" : ""}</div>
-            <div className="muted mono" style={{ fontSize: 11.5 }}>{(r.actions || []).map((a) => a.action.type + "(" + a.status + ")" + (a.action.args ? " " + JSON.stringify(a.action.args).slice(0, 160) : "")).join(" ; ")}</div>
+            <div className="muted mono" style={{ fontSize: 11.5 }}>{(r.actions || []).map((a) => a.action.type + "(" + a.status + ")" + (a.action.args ? " " + JSON.stringify(a.action.args).slice(0, 700) : "")).join(" ; ")}</div>
           </div>
         ))}
       </div>
@@ -5638,11 +5647,13 @@ tr:hover td{background:var(--hover)}
   display:flex;align-items:center;justify-content:center}
 .empty-title{font-weight:700;font-family:'Sora';font-size:14.5px}
 .empty-hint{color:var(--slate2);font-size:13px;max-width:400px}
-.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--text);color:var(--bg);
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:#16202E;color:#fff;max-width:calc(100vw - 32px);
   border-radius:11px;padding:10px 17px;font-size:13px;font-weight:600;display:flex;gap:8px;align-items:center;
   box-shadow:var(--shadow-lg);z-index:100;animation:toastIn .2s ease}
 @keyframes toastIn{from{transform:translate(-50%,10px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
-.toast svg{color:var(--green)}
+.toast svg{color:#6FD6A0;flex:none}
+.app[data-theme="dark"] .toast{background:#EEF1F7;color:#16202E}   /* solid colours: the theme's --bg is see-through */
+.app[data-theme="dark"] .toast svg{color:#2E9A63}
 .set-wrap{max-width:780px}
 .set-group{margin-bottom:22px}
 .set-group-title{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--slate2);margin:0 0 8px 8px}

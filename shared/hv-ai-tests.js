@@ -1,4 +1,4 @@
-/* HV AI command test set: 27 commands (Hinglish, Hindi, English, voice-style run-ons, ambiguous
+/* HV AI command test set: 28 commands (Hinglish, Hindi, English, voice-style run-ons, ambiguous
    names, deletes, relative dates). Each check looks only at the parsed + validated + resolved
    actions; nothing is executed. Used by HV Vault > Settings > "HV AI self-test" with the user's
    own key, and by the Node tests. Fixed data and a fixed "now" make the expectations exact. */
@@ -46,8 +46,10 @@
     T("Aaj ka schedule bana do: 3 ghante apply, 1 ghanta interview prep, shaam 7 ke baad free", "Hinglish · plan", (r) => {
       const p = ready(r, "buildDayPlan")[0]; if (!p) return pass(false, "no ready buildDayPlan");
       const b = p.action.args.blocks, total = (k) => b.filter((x) => x.kind === k).reduce((s, x) => s + x.duration_min, 0);
-      const free = b.find((x) => x.kind === "free");
-      return pass(p.action.args.date === "2026-09-28" && total("apply") >= 150 && total("prep") >= 45 && free && min(free.start) >= 19 * 60 - 1 && b.some((x) => x.kind === "meal"), "today: ~3h apply, ~1h prep, free from 19:00, meals kept"); }),
+      const free = b.find((x) => x.kind === "free"), workAfter7 = b.some((x) => ["apply", "prep", "outreach", "work"].indexOf(x.kind) >= 0 && min(x.start) + x.duration_min > 19 * 60);
+      const miss = [p.action.args.date !== "2026-09-28" && "date " + p.action.args.date, total("apply") < 150 && "apply " + total("apply") + " min", total("prep") < 45 && "prep " + total("prep") + " min",
+        (workAfter7 || (free && min(free.start) < 19 * 60 - 1)) && "not free after 7 PM", !b.some((x) => x.kind === "meal") && "no meal", b.some((x) => x.kind !== "free" && x.duration_min > 90) && "a block over 90 min"].filter(Boolean);
+      return pass(!miss.length, "today: ~3h apply, ~1h prep, free after 7 PM, meals kept, blocks ≤ 90 min" + (miss.length ? " — got: " + miss.join(", ") : "")); }),
     T("Aaj kitne apply kiye aur kaunse follow-ups pending hain?", "Hinglish · question", (r) => {
       const a = of(r, "answer")[0]; return pass(a && /\b1\b|one|ek/i.test(a.action.args.text) && /groww/i.test(a.action.args.text) && !mutating(r).length, "answers 1 applied + Groww follow-up, changes nothing"); }),
     T("Add a Business Development Associate role at Meesho from Naukri", "English", (r) => {
@@ -82,12 +84,14 @@
       const b = p.action.args.blocks, prep = b.find((x) => x.block_id === "prep" || /prep/i.test(x.title)), apply = b.find((x) => x.block_id === "apply1" || /application/i.test(x.title));
       return pass(prep && prep.duration_min <= 35 && apply && b.some((x) => x.kind === "meal"), "prep shortened to ~30 min; applications and lunch kept"); }),
     T("hi", "Greeting", (r) => pass(of(r, "answer").length && !mutating(r).length, "just a reply")),
-    T("Cred ke saath interview schedule karo", "Missing date", (r) => pass(!ready(r, "addEvent").length && (asks(r) || of(r, "answer").length), "asks when, adds nothing")),
+    T("Cred ke saath interview schedule karo", "Missing date", (r) => pass(!of(r, "addEvent").length && asks(r), "asks when, adds nothing")),
     T("Zomato interview kal 3 baje aur Swiggy BD manager ko interview stage mein daal do", "Hinglish · two actions", (r) => {
       const e = ready(r, "addEvent")[0], m = ready(r, "moveStage")[0];
       return pass(e && e.action.args.date === "2026-09-29" && e.action.args.time === "15:00" && m && m.action.args.job_id === "j2" && m.action.args.stage === "Interview", "event 29 Sep 15:00 + Swiggy BD Manager → Interview"); }),
     T("Is hafte kitne applications gaye?", "Hinglish · question", (r) => {
-      const a = of(r, "answer")[0]; return pass(a && /\b2\b|two|do\b/i.test(a.action.args.text) && !mutating(r).length, "answers 2 this week"); }),
+      const a = of(r, "answer")[0]; return pass(a && /\b1\b|one|\bek\b/i.test(a.action.args.text) && !mutating(r).length, "answers 1 this week (weeks start Monday; the 24 Sep one was last week)"); }),
+    T("Pichle 7 din mein kitne apply kiye?", "Hinglish · question", (r) => {
+      const a = of(r, "answer")[0]; return pass(a && /\b2\b|two|\bdo\b/i.test(a.action.args.text) && !mutating(r).length, "answers 2 in the last 7 days"); }),
     T("Aaj ke saare tasks shaam 7:30 se shuru karo, sab shift kar do", "Hinglish · shift plan", (r) => {
       const p = ready(r, "editDayPlan")[0]; if (!p) return pass(false, "no ready editDayPlan");
       const b = p.action.args.blocks, at = (id, re) => b.find((x) => x.block_id === id || re.test(x.title));
@@ -105,7 +109,7 @@
     const t0 = Date.now(); const r = await HVAI.interpret(cfg, t.cmd, ctx, [], t.app);   // interpret() already tidies times/kinds (normalize)
     if (r.error) return { ok: false, why: r.error, actions: [], ms: Date.now() - t0 };
     const allowed = HVAI.scopeOf(t.app).allowed;                     // same filter as the chat: other-app actions are dropped
-    const res = (r.actions || []).filter((a) => a && allowed.indexOf(a.type) >= 0).map(HVAI.normalize).map((a) => {
+    const res = HVAI.guard((r.actions || []).filter((a) => a && allowed.indexOf(a.type) >= 0).map(HVAI.normalize), t.cmd).map((a) => {   // guard: same as interpret (safe to run twice)
       if ((a.type === "buildDayPlan" || a.type === "editDayPlan") && HVAI.validate(a).ok) {
         const f = HVAI.fixPlan(a.args.blocks, a.type === "editDayPlan" ? PLAN.blocks : null);
         return { status: "ready", action: { type: a.type, args: Object.assign({}, a.args, { blocks: f.blocks }) } };

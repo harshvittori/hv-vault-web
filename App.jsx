@@ -5006,6 +5006,13 @@ tr:hover td{background:var(--hover)}
   .sidebar-foot{display:none}
   .content{padding:16px 14px 50px}
 }
+@media(max-width:640px){
+  /* The desktop 1.08 zoom multiplies vw-sized modals and drawers past the screen edge on phones. */
+  .app{zoom:1}
+  .topbar{flex-wrap:wrap;gap:8px;padding:10px 14px}
+  .searchwrap{flex:1 1 100%;max-width:none}
+  .topbar-actions{width:100%;justify-content:flex-end}
+}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `}</style>
   );

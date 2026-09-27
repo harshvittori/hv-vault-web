@@ -31,6 +31,8 @@
   const niceDate = (iso) => { if (!iso) return ""; const t = new Date(iso + "T12:00:00Z"); return weekdayOf(iso).slice(0, 3) + ", " + t.getUTCDate() + " " + ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][t.getUTCMonth()]; };
   const toMin = (hhmm) => { const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm || ""); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
   const hhmm = (min) => pad(Math.floor(((min % 1440) + 1440) % 1440 / 60)) + ":" + pad(((min % 60) + 60) % 60);
+  /* any 24-hour time in a sentence ("17:25", "9:05") becomes 12-hour ("5:25 PM"); leaves "5:25 PM" alone */
+  const to12 = (text) => String(text == null ? "" : text).replace(/(^|[^\d:])([01]?\d|2[0-3]):([0-5]\d)(?!\d|:\d|\s*[ap]\.?m\b)/gi, (m, pre, h, mi) => pre + niceTime(h + ":" + mi).replace(" ", "\u00a0"));   // keep "5:45 PM" on one line
   const niceTime = (t) => { const m = toMin(t); if (isNaN(m)) return ""; let h = Math.floor(m / 60); const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12; return h + ":" + pad(m % 60) + " " + ap; };
   /* phrases the model must map to dates; computed here so "kal", "parso", "next Monday" never drift */
   function dateHints(today) {
@@ -125,12 +127,13 @@
     "You are HV AI, the assistant inside HV Vault (job-hunt CRM) and Harsh Reset (daily plan) for Harsh.",
     "Reply in the language the user used (Hinglish, Hindi or English). Keep replies very short.",
     "You can only act through the provided functions. Always call at least one function. Always include one 'answer' call with a short reply, unless you call askClarification.",
-    "Your calls are proposals: the app shows them to Harsh to confirm. Never say something is done; say what you will do after he confirms.",
+    "Your calls are proposals: the app shows them to Harsh to confirm. Never say something is done or updated ('kar diya', 'ho gaya', 'done', 'updated' are wrong); say what will happen after he confirms, e.g. 'Ye raha naya plan, confirm karo.'",
     "Use ids from the context when a job/follow-up clearly matches. If a company or role matches more than one job and the user did not say which, call askClarification listing them. If nothing matches, say so in 'answer' and do not invent ids.",
-    "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. Output dates as YYYY-MM-DD and times as HH:MM.",
+    "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. In function arguments output dates as YYYY-MM-DD and times as HH:MM (24-hour). In any text Harsh reads (answer, askClarification) always write times in 12-hour format with AM/PM, e.g. 5:25 PM, never 17:25.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
     "Day plans (Harsh Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' = a free block from 19:00. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
+    "Shifting the plan ('sab 7:30 PM se shuru karo', 'late ho gaya, baaki sab shift karo', 'push everything by 1 hour'): call editDayPlan with EVERY block of today_plan that is not done, in the same order, back to back from the new start (default: context.now rounded up to the next 15 minutes), keeping each block_id, title, kind and duration_min. Leave done blocks as they are. If it runs past midnight just keep counting (24:15, 24:45); the app fits it into the day.",
   ].join("\n");
 
   /* ---------------- provider calls ---------------- */
@@ -187,12 +190,13 @@
   }
   async function interpret(cfg, userText, context, history) {
     if (!cfg || !cfg.key || !cfg.provider || cfg.provider === "off") return { error: "NO_KEY" };
-    if (cfg.provider === "openrouter") return openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR);
+    if (cfg.provider === "openrouter") { const o = await openrouterActions(cfg, userText, context, history, cfg.model || DEFAULT_OR); return o && o.actions ? Object.assign({}, o, { actions: o.actions.map(normalize) }) : o; }
     const model = cfg.model || DEFAULT_GEMINI;
-    let r = await geminiActions(cfg, userText, context, history, model);
+    const tidy = (x) => (x && x.actions ? Object.assign({}, x, { actions: x.actions.map(normalize) }) : x);
+    let r = tidy(await geminiActions(cfg, userText, context, history, model));
     const usable = r.actions && r.actions.some((a) => validate(a).ok);
     if (!cfg.model && (r.error || !usable) && r.status !== 400 && r.status !== 401 && r.status !== 403) {   // retry once on the stronger model
-      const r2 = await geminiActions(cfg, userText, context, history, FALLBACK_GEMINI);
+      const r2 = tidy(await geminiActions(cfg, userText, context, history, FALLBACK_GEMINI));
       if (r2.actions && r2.actions.some((a) => validate(a).ok)) r = r2;
     }
     return r;
@@ -212,6 +216,40 @@
   /* ---------------- validation ---------------- */
   const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(s || "") && !isNaN(new Date(s + "T12:00:00Z"));
   const isTime = (s) => /^\d{1,2}:\d{2}$/.test(s || "") && toMin(s) < 1440;
+  const isBlockTime = (s) => /^\d{1,2}:\d{2}$/.test(s || "") && toMin(s) < 2880;   // a plan may run past midnight ("24:30"); fixPlan fits it into the day
+  /* read the time formats models actually send: "19:30", "7:30 PM", "7.30pm", "19:30:00", "1930", "7 pm", "24:15" */
+  function normTime(v) {
+    if (typeof v === "number" && isFinite(v)) v = String(v);
+    const t = String(v == null ? "" : v).trim().toLowerCase().replace(/\s+/g, " ");
+    let m = /^(\d{1,2})(?:[:.](\d{2}))?(?::\d{2})?\s*([ap])\.?\s*m?\.?$/.exec(t);
+    if (m) { let h = +m[1] % 12; if (m[3] === "p") h += 12; return pad(h) + ":" + (m[2] || "00"); }
+    m = /^(\d{1,2})[:.](\d{2})(?::\d{2})?$/.exec(t); if (m) return pad(+m[1]) + ":" + m[2];
+    m = /^(\d{1,2})(\d{2})$/.exec(t); if (m && +m[2] < 60) return pad(+m[1]) + ":" + m[2];
+    return v;
+  }
+  const KIND_ALIAS = { break: "rest", breather: "rest", lunch: "meal", dinner: "meal", breakfast: "meal", food: "meal", task: "work", deep_work: "work", applying: "apply", application: "apply", applications: "apply", interview: "prep", interview_prep: "prep", networking: "outreach", end: "close", wrap: "close" };
+  /* tidy one model action before validation (times, numbers, kind names); never invents content */
+  function normalize(action) {
+    if (!action || !action.args || typeof action.args !== "object") return action;
+    const a = Object.assign({}, action.args);
+    if (a.time != null && a.time !== "") a.time = normTime(a.time);
+    if (Array.isArray(a.blocks)) {
+      let prev = -1;
+      a.blocks = a.blocks.map((b) => {
+        if (!b || typeof b !== "object") return b;
+        const x = Object.assign({}, b);
+        x.start = normTime(x.start);
+        let m = toMin(x.start);
+        if (!isNaN(m) && prev >= 0 && m < prev - 360) { m += 1440; x.start = pad(Math.floor(m / 60)) + ":" + pad(m % 60); }   // "00:15" after "23:30" = past midnight
+        if (!isNaN(m)) prev = m;
+        if (typeof x.duration_min === "string" && /^\d+$/.test(x.duration_min.trim())) x.duration_min = +x.duration_min.trim();
+        if (typeof x.duration_min === "number") x.duration_min = Math.round(x.duration_min);
+        if (typeof x.kind === "string") { const k = x.kind.trim().toLowerCase().replace(/[\s-]+/g, "_"); x.kind = BLOCK_KINDS.indexOf(k) >= 0 ? k : (KIND_ALIAS[k] || x.kind); }
+        return x;
+      });
+    }
+    return Object.assign({}, action, { args: a });
+  }
   const str = (v) => typeof v === "string" && v.trim().length > 0;
   const hasRef = (a) => str(a.job_id) || str(a.company) || str(a.role);
   function validate(action) {
@@ -240,7 +278,7 @@
     if (a.link && !/^(https?:\/\/)?[^\s]+\.[^\s]+$/i.test(a.link)) errs.push("link doesn't look like a URL");
     if (t === "buildDayPlan" || t === "editDayPlan") (Array.isArray(a.blocks) ? a.blocks : []).forEach((b, i) => {
       if (!b || typeof b !== "object") { errs.push("block " + (i + 1) + " is empty"); return; }
-      if (!isTime(b.start)) errs.push("block " + (i + 1) + " start must be HH:MM");
+      if (!isBlockTime(b.start)) errs.push("block " + (i + 1) + " has a time I couldn't read (" + (b.start || "empty") + ")");
       const dm = Number(b.duration_min); if (!(dm >= 5 && dm <= 600)) errs.push("block " + (i + 1) + " length must be 5-600 minutes");
       if (!str(b.title)) errs.push("block " + (i + 1) + " needs a title");
       if (BLOCK_KINDS.indexOf(b.kind) < 0) errs.push("block " + (i + 1) + " kind must be one of " + BLOCK_KINDS.join(", "));
@@ -311,6 +349,31 @@
   const MEALS = [{ name: "Lunch", from: 12 * 60 + 30, to: 15 * 60, at: 13 * 60 + 30, len: 30 }, { name: "Dinner", from: 19 * 60 + 30, to: 22 * 60, at: 20 * 60 + 30, len: 30 }];
   const JOIN = /\s+(?:and|aur|&|\+|then|phir)\s+/i;
   /* one block one task; core blocks shrink but never drop; never skip a meal. Returns { blocks, notes } */
+  /* a shifted or late plan must still end by midnight: drop free time and breaks, then shrink
+     (core never below 15 min, meals never below 20), then drop optional work. Finished blocks never move. */
+  function fitDay(blocks, notes) {
+    const END = 1440, live = () => blocks.filter((b) => !b.locked);
+    const endOf = () => blocks.reduce((m, b) => Math.max(m, b.start + b.duration_min), 0);
+    if (!blocks.length || endOf() <= END) return;
+    const before = endOf();
+    const pack = () => { const l = live(); if (!l.length) return; let t = l[0].start; l.forEach((b) => { b.start = t; t += b.duration_min; }); };
+    const dropped = [];
+    for (let i = blocks.length - 1; i >= 0 && endOf() > END; i--) if (!blocks[i].locked && (blocks[i].kind === "free" || blocks[i].kind === "rest")) dropped.push(blocks.splice(i, 1)[0].title);
+    pack();
+    let need = endOf() - END;
+    if (need > 0) {
+      const floor = (b) => (b.core ? 15 : b.kind === "meal" ? 20 : 10);
+      const l = live(), slack = l.reduce((s, b) => s + Math.max(0, b.duration_min - floor(b)), 0);
+      if (slack > 0) {
+        const ratio = Math.min(1, need / slack);
+        l.forEach((b) => { const room = Math.max(0, b.duration_min - floor(b)); b.duration_min -= Math.min(room, 5 * Math.ceil(room * ratio / 5)); });   // cut in 5-minute steps
+        pack(); need = endOf() - END;
+      }
+      for (let i = blocks.length - 1; i >= 0 && need > 0; i--) if (!blocks[i].locked && !blocks[i].core && blocks[i].kind !== "meal") { dropped.push(blocks.splice(i, 1)[0].title); pack(); need = endOf() - END; }
+      if (need > 0) { const last = live().pop(); if (last) last.duration_min = Math.max(5, END - last.start); }
+    }
+    notes.push("Fitted the day before midnight (it ran " + Math.round(before - END) + " min over): " + (dropped.length ? "removed " + dropped.join(", ") + "; " : "") + "shortened blocks where needed. Core tasks kept, meals kept.");
+  }
   function fixPlan(blocksIn, current) {
     const notes = [];
     let blocks = [];
@@ -324,6 +387,13 @@
       } else blocks.push(base);
     });
     blocks.sort((a, b) => a.start - b.start);
+    if (current && current.length) {                                     // finished blocks stay exactly where they were
+      current.filter((c) => c.done).forEach((c) => {
+        blocks = blocks.filter((b) => !((b.block_id && b.block_id === c.id) || norm(b.title) === norm(c.title)));
+        blocks.push({ block_id: c.id, start: toMin(c.start), duration_min: c.duration_min, title: c.title, kind: BLOCK_KINDS.indexOf(c.kind) >= 0 ? c.kind : "work", core: !!c.core, locked: true });
+      });
+      blocks.sort((a, b) => a.start - b.start);
+    }
     if (current && current.length) {                                     // editing: keep core work and meals
       current.forEach((c) => {
         if (c.done) return;
@@ -339,10 +409,11 @@
       });
       blocks.sort((a, b) => a.start - b.start);
     }
-    const covers = (w) => blocks.length && blocks[0].start < w.to && blocks.reduce((m, b) => Math.max(m, b.start + b.duration_min), 0) > w.from;
+    const open = () => blocks.filter((b) => !b.locked);                  // finished blocks don't decide where meals go
+    const covers = (w) => { const l = open(); return l.length && l[0].start < w.to && l.reduce((m, b) => Math.max(m, b.start + b.duration_min), 0) > w.from; };
     MEALS.forEach((w) => {
       if (!covers(w) || blocks.some((b) => b.kind === "meal" && b.start < w.to && b.start + b.duration_min > w.from)) return;
-      const free = blocks.find((b) => b.kind === "free" && b.start < w.to && b.start + b.duration_min > w.from);
+      const free = open().find((b) => b.kind === "free" && b.start < w.to && b.start + b.duration_min > w.from);
       if (free) {                                                        // put the meal inside free time
         const at = Math.max(free.start, Math.min(w.at, free.start + free.duration_min - w.len));
         const after = free.start + free.duration_min - (at + w.len);
@@ -352,20 +423,28 @@
         blocks.push({ start: at, duration_min: w.len, title: w.name, kind: "meal", core: false });
         if (after >= 5) blocks.push(Object.assign({}, free, { block_id: undefined, start: at + w.len, duration_min: after }));
       } else {                                                           // insert and push later blocks
-        const at = blocks.filter((b) => b.start + b.duration_min <= w.at).reduce((m, b) => Math.max(m, b.start + b.duration_min), blocks[0].start);
-        blocks.forEach((b) => { if (b.start >= at && b.kind !== "free") b.start += w.len; });   // free time keeps its start
+        const l = open(), at = l.filter((b) => b.start + b.duration_min <= w.at).reduce((m, b) => Math.max(m, b.start + b.duration_min), l[0].start);
+        l.forEach((b) => { if (b.start >= at && b.kind !== "free") b.start += w.len; });   // free time keeps its start
         blocks.push({ start: at, duration_min: w.len, title: w.name, kind: "meal", core: false });
       }
       notes.push("Added " + w.name.toLowerCase() + " at " + niceTime(hhmm(blocks.find((b) => b.title === w.name && b.kind === "meal").start)) + " (never skip a meal).");
       blocks.sort((a, b) => a.start - b.start);
     });
+    const l0 = open(), dn = MEALS[1];
+    if (l0.length && l0[0].start >= dn.to && l0[0].start < 1440 && !blocks.some((b) => b.kind === "meal" && b.start + b.duration_min > dn.from)) {   // starting after 10 PM with no dinner yet: eat first
+      l0.forEach((b) => { b.start += dn.len; });
+      blocks.push({ start: l0[0].start - dn.len, duration_min: dn.len, title: dn.name, kind: "meal", core: false });
+      notes.push("Added dinner at " + niceTime(hhmm(l0[0].start - dn.len)) + " first (never skip a meal).");
+    }
     blocks.sort((a, b) => a.start - b.start);
     for (let i = 1; i < blocks.length; i++) {                           // no overlaps: work moves later, free time is trimmed
       const prevEnd = blocks[i - 1].start + blocks[i - 1].duration_min;
-      if (blocks[i].start >= prevEnd) continue;
+      if (blocks[i].start >= prevEnd || blocks[i].locked) continue;
       if (blocks[i].kind === "free") { const end = blocks[i].start + blocks[i].duration_min; blocks[i].start = prevEnd; blocks[i].duration_min = Math.max(0, end - prevEnd); }
       else blocks[i].start = prevEnd;
     }
+    blocks = blocks.filter((b) => b.duration_min >= 5);
+    fitDay(blocks, notes);
     blocks = blocks.filter((b) => b.duration_min >= 5);
     return { blocks: blocks.map((b) => ({ block_id: b.block_id, start: hhmm(b.start), duration_min: b.duration_min, title: b.title, kind: b.kind, core: !!b.core })), notes };
   }
@@ -408,51 +487,63 @@
 
   /* ---------------- the chat widget ---------------- */
   const CSS = `
-.hvai-fab{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(18px,env(safe-area-inset-bottom));z-index:75;display:flex;align-items:center;gap:8px;padding:6px 16px 6px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.7);
-  background:linear-gradient(135deg,#4F66E0,#7C5CE0);color:#fff;font:700 15px/1 system-ui,-apple-system,'Segoe UI',sans-serif;box-shadow:0 14px 34px -12px rgba(60,70,160,.8);cursor:pointer;-webkit-tap-highlight-color:transparent}
-.hvai-fab svg{width:36px;height:36px;border-radius:11px;display:block}
-.hvai-fab:active{transform:scale(.97)}
-.hvai{position:fixed;z-index:76;right:16px;bottom:16px;width:min(430px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:flex;flex-direction:column;border-radius:26px;overflow:hidden;
-  font:15px/1.45 system-ui,-apple-system,'Segoe UI',sans-serif;color:var(--hvai-ink);background:var(--hvai-bg);border:1px solid var(--hvai-line);box-shadow:0 30px 80px -20px rgba(20,30,60,.45);
-  -webkit-backdrop-filter:blur(24px) saturate(150%);backdrop-filter:blur(24px) saturate(150%);--hvai-ink:#16202E;--hvai-muted:#5A6479;--hvai-bg:rgba(248,249,255,.94);--hvai-card:#fff;--hvai-line:rgba(30,42,80,.12);--hvai-accent:#4F66E0;--hvai-danger:#C44E4E;--hvai-me:#E7EBFF}
-.hvai.dark{--hvai-ink:#EEF1F7;--hvai-muted:#AAB3C5;--hvai-bg:rgba(18,22,40,.95);--hvai-card:rgba(255,255,255,.07);--hvai-line:rgba(255,255,255,.14);--hvai-accent:#8FA6FF;--hvai-danger:#F08A8A;--hvai-me:rgba(143,166,255,.18)}
+.hvai-fab{position:fixed;right:max(16px,env(safe-area-inset-right));bottom:max(18px,env(safe-area-inset-bottom));z-index:75;display:flex;align-items:center;gap:9px;padding:6px 18px 6px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.55);
+  background:linear-gradient(135deg,#4F66E0 0%,#7C5CE0 100%);color:#fff;font:600 15px/1 'Sora',system-ui,-apple-system,'Segoe UI',sans-serif;letter-spacing:.01em;
+  box-shadow:0 14px 34px -12px rgba(64,88,200,.85),inset 0 1px 0 rgba(255,255,255,.3);cursor:pointer;-webkit-tap-highlight-color:transparent;transition:transform .25s cubic-bezier(.22,1,.36,1),opacity .2s}
+.hvai-fab svg{width:34px;height:34px;border-radius:11px;display:block}
+.hvai-fab:hover{transform:translateY(-1px)}.hvai-fab:active{transform:scale(.97)}
+.hvai{--hvai-ink:#16202E;--hvai-muted:rgba(22,32,46,.6);--hvai-bg:rgba(246,248,255,.88);--hvai-card:rgba(255,255,255,.78);--hvai-line:rgba(22,32,46,.1);--hvai-accent:#4058C8;--hvai-grad:linear-gradient(135deg,#4F66E0 0%,#7C5CE0 100%);--hvai-danger:#C44E4E;--hvai-field:rgba(255,255,255,.9);--hvai-hi:rgba(255,255,255,.9);
+  position:fixed;z-index:76;right:16px;bottom:16px;width:min(420px,calc(100vw - 32px));height:min(680px,calc(100vh - 32px));display:flex;flex-direction:column;border-radius:28px;overflow:hidden;
+  font:15.5px/1.5 'Atkinson Hyperlegible',system-ui,-apple-system,'Segoe UI',sans-serif;color:var(--hvai-ink);background:var(--hvai-bg);border:1px solid var(--hvai-line);
+  box-shadow:0 30px 80px -24px rgba(30,40,90,.45),inset 0 1px 0 var(--hvai-hi);-webkit-backdrop-filter:blur(30px) saturate(160%);backdrop-filter:blur(30px) saturate(160%)}
+.hvai.dark{--hvai-ink:#EEF1F7;--hvai-muted:rgba(238,241,247,.62);--hvai-bg:rgba(15,19,38,.9);--hvai-card:rgba(255,255,255,.065);--hvai-line:rgba(255,255,255,.11);--hvai-accent:#A3B6FF;--hvai-danger:#F08A80;--hvai-field:rgba(255,255,255,.07);--hvai-hi:rgba(255,255,255,.1)}
 .hvai[hidden],.hvai-fab[hidden]{display:none}
 body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;pointer-events:none}
-.hvai-head{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--hvai-line)}
-.hvai-head svg{width:30px;height:30px;border-radius:9px}
-.hvai-head b{flex:1;font-size:17px}
-.hvai-x{border:0;background:none;color:var(--hvai-muted);font-size:26px;line-height:1;padding:4px 8px;cursor:pointer}
-.hvai-log{flex:1;overflow-y:auto;padding:14px 14px 6px;display:flex;flex-direction:column;gap:10px;overscroll-behavior:contain}
-.hvai-msg{max-width:88%;padding:9px 13px;border-radius:18px;white-space:pre-wrap;word-wrap:break-word}
-.hvai-msg.ai{align-self:flex-start;background:var(--hvai-card);border:1px solid var(--hvai-line);border-bottom-left-radius:6px}
-.hvai-msg.me{align-self:flex-end;background:var(--hvai-me);border-bottom-right-radius:6px}
-.hvai-msg.sys{align-self:center;font-size:13px;color:var(--hvai-muted);background:none;padding:2px 8px}
-.hvai-card{align-self:stretch;border:1px solid var(--hvai-line);border-radius:18px;padding:11px 13px;background:var(--hvai-card)}
+.hvai-head{display:flex;align-items:center;gap:11px;padding:14px 14px 12px 16px;border-bottom:1px solid var(--hvai-line)}
+.hvai-head>svg{width:34px;height:34px;border-radius:11px;flex:none}
+.hvai-ttl{flex:1;min-width:0;display:flex;flex-direction:column;line-height:1.15}
+.hvai-ttl b{font:600 17px/1.2 'Sora',system-ui,sans-serif;letter-spacing:-.01em}
+.hvai-ttl small{font-size:12.5px;color:var(--hvai-muted)}
+.hvai-x{flex:none;width:36px;height:36px;border-radius:50%;border:1px solid var(--hvai-line);background:var(--hvai-card);color:var(--hvai-ink);display:grid;place-items:center;cursor:pointer;padding:0}
+.hvai-x svg{width:16px;height:16px}
+.hvai-log{flex:1;overflow-y:auto;padding:16px 14px 8px;display:flex;flex-direction:column;gap:10px;overscroll-behavior:contain;scrollbar-width:thin}
+.hvai-msg{max-width:86%;padding:10px 14px;border-radius:20px;white-space:pre-wrap;word-wrap:break-word}
+.hvai-msg.ai{align-self:flex-start;background:var(--hvai-card);border:1px solid var(--hvai-line);border-bottom-left-radius:7px}
+.hvai-msg.me{align-self:flex-end;background:var(--hvai-grad);color:#fff;border-bottom-right-radius:7px;box-shadow:0 8px 20px -12px rgba(64,88,200,.8)}
+.hvai-msg.sys{align-self:center;max-width:100%;font-size:13px;color:var(--hvai-muted);background:none;padding:0 8px;text-align:center}
+.hvai-card{align-self:stretch;border:1px solid var(--hvai-line);border-radius:20px;padding:12px 14px;background:var(--hvai-card)}
 .hvai-card.danger{border-color:var(--hvai-danger)}
 .hvai-card.done{opacity:.6}
-.hvai-ct{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--hvai-muted);font-weight:700}
+.hvai-ct{font:600 11.5px/1.3 'Sora',system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--hvai-muted)}
 .hvai-card.danger .hvai-ct{color:var(--hvai-danger)}
-.hvai-cx{font-weight:600;margin-top:2px}
+.hvai-cx{font-weight:700;margin-top:3px}
 .hvai-cs{font-size:13.5px;color:var(--hvai-muted);margin-top:2px}
 .hvai-plan{margin:6px 0 0;padding-left:18px;font-size:13.5px}
-.hvai-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
-.hvai button.b{border-radius:999px;border:1px solid var(--hvai-line);background:transparent;color:var(--hvai-ink);padding:7px 14px;font:inherit;font-size:14px;cursor:pointer;min-height:36px}
-.hvai button.b.p,.hvai a.b.p{background:var(--hvai-accent);border-color:transparent;color:#fff}
-.hvai a.b{border-radius:999px;padding:7px 14px;font-size:14px;min-height:36px;box-sizing:border-box}
+.hvai-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.hvai button.b,.hvai a.b{border-radius:999px;border:1px solid var(--hvai-line);background:transparent;color:var(--hvai-ink);padding:7px 15px;font:inherit;font-size:14px;font-weight:700;cursor:pointer;min-height:38px;box-sizing:border-box}
+.hvai button.b.p,.hvai a.b.p{background:var(--hvai-grad);border-color:transparent;color:#fff;box-shadow:0 8px 18px -10px rgba(64,88,200,.9)}
 .hvai button.b.d{background:var(--hvai-danger);border-color:transparent;color:#fff}
 .hvai-opt{display:block;width:100%;text-align:left;margin-top:6px}
-.hvai-edit label{display:block;font-size:12.5px;color:var(--hvai-muted);margin:7px 0 2px}
-.hvai-edit input,.hvai-edit select,.hvai-edit textarea{width:100%;box-sizing:border-box;font:inherit;font-size:16px;padding:8px 10px;border-radius:10px;border:1px solid var(--hvai-line);background:transparent;color:var(--hvai-ink)}
-.hvai-bar{display:flex;align-items:flex-end;gap:8px;padding:10px 12px max(12px,env(safe-area-inset-bottom));border-top:1px solid var(--hvai-line)}
-.hvai-in{flex:1;resize:none;max-height:120px;min-height:44px;box-sizing:border-box;font:inherit;font-size:16px;padding:11px 14px;border-radius:22px;border:1px solid var(--hvai-line);background:var(--hvai-card);color:var(--hvai-ink)}
-.hvai-mic,.hvai-send{flex:none;width:46px;height:46px;border-radius:50%;border:0;display:grid;place-items:center;cursor:pointer;font-size:19px;-webkit-tap-highlight-color:transparent;touch-action:none}
-.hvai-mic{background:var(--hvai-card);border:1px solid var(--hvai-line);color:var(--hvai-ink)}
-.hvai-mic.rec{background:var(--hvai-danger);color:#fff;border-color:transparent;animation:hvaiPulse 1s ease-in-out infinite}
-.hvai-send{background:var(--hvai-accent);color:#fff}
-.hvai-send:disabled{opacity:.45}
+.hvai-edit label{display:block;font-size:12.5px;color:var(--hvai-muted);margin:8px 0 3px}
+.hvai-edit input,.hvai-edit select,.hvai-edit textarea{width:100%;box-sizing:border-box;font:inherit;font-size:16px;padding:9px 11px;border-radius:12px;border:1px solid var(--hvai-line);background:var(--hvai-field);color:var(--hvai-ink);color-scheme:light dark}
+.hvai-bar{padding:10px 12px max(10px,env(safe-area-inset-bottom));border-top:1px solid var(--hvai-line)}
+.hvai-box{display:flex;align-items:flex-end;gap:4px;padding:5px;border-radius:26px;border:1px solid var(--hvai-line);background:var(--hvai-field);transition:border-color .2s,box-shadow .2s}
+.hvai-box:focus-within{border-color:var(--hvai-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--hvai-accent) 22%,transparent)}
+.hvai .hvai-in{flex:1;min-width:0;width:auto;min-height:40px;margin:0;border-radius:0;box-shadow:none;resize:none;border:0;outline:0;background:transparent;color:var(--hvai-ink);font:inherit;font-size:16px;line-height:22px;height:40px;max-height:124px;padding:9px 6px 9px 12px;box-sizing:border-box;overflow-y:hidden;scrollbar-width:none;white-space:pre-wrap}
+.hvai .hvai-in::-webkit-scrollbar{display:none}
+.hvai .hvai-in::placeholder{color:var(--hvai-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hvai-mic,.hvai-send{flex:none;width:40px;height:40px;border-radius:50%;border:0;padding:0;display:grid;place-items:center;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:none;transition:transform .15s,background .2s,opacity .2s}
+.hvai-mic svg,.hvai-send svg{width:20px;height:20px;display:block}
+.hvai-mic{background:transparent;color:var(--hvai-muted)}
+.hvai-mic:hover{color:var(--hvai-ink);background:var(--hvai-card)}
+.hvai-mic.rec{background:var(--hvai-danger);color:#fff;animation:hvaiPulse 1s ease-in-out infinite}
+.hvai-send{background:var(--hvai-grad);color:#fff;box-shadow:0 6px 14px -8px rgba(64,88,200,.9)}
+.hvai-send:active,.hvai-mic:active{transform:scale(.93)}
+.hvai-send:disabled{opacity:.4;cursor:default}
+.hvai-hint{font-size:12px;color:var(--hvai-muted);text-align:center;margin-top:6px}
 .hvai-typing{align-self:flex-start;color:var(--hvai-muted);font-size:13.5px;padding:2px 6px}
 @keyframes hvaiPulse{50%{box-shadow:0 0 0 8px rgba(196,78,78,.2)}}
-@media(max-width:640px){.hvai{right:0;left:0;bottom:0;width:100%;height:88vh;height:88dvh;border-radius:24px 24px 0 0}}
+@media(max-width:640px){.hvai{right:0;left:0;bottom:0;width:100%;height:88vh;height:88dvh;border-radius:26px 26px 0 0;border-bottom:0}}
 `;
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   const EDIT_FIELDS = {
@@ -470,17 +561,21 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     let lastUndo = null, busy = false;
     const fab = document.createElement("button"); fab.className = "hvai-fab"; fab.setAttribute("aria-label", "Open HV AI"); fab.innerHTML = (host.logoSVG || "") + "<span>HV AI</span>";
     const panel = document.createElement("section"); panel.className = "hvai"; panel.hidden = true; panel.setAttribute("aria-label", "HV AI");
-    panel.innerHTML = '<div class="hvai-head">' + (host.logoSVG || "") + '<b>HV AI</b><button class="hvai-x" aria-label="Close HV AI">×</button></div>' +
+    const ICON_MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11.5" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21"/></svg>';
+    const ICON_SEND = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/></svg>';
+    const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>';
+    const headLogo = String(host.logoSVG || "").replace(/id="([^"]+)"/g, 'id="$1-h"').replace(/url\(#([^)]+)\)/g, "url(#$1-h)");   // own gradient ids: the button's copy is hidden while the panel is open
+    panel.innerHTML = '<div class="hvai-head">' + headLogo + '<div class="hvai-ttl"><b>HV AI</b><small>Hindi · English · Hinglish</small></div><button class="hvai-x" aria-label="Close HV AI">' + ICON_X + '</button></div>' +
       '<div class="hvai-log" role="log" aria-live="polite"></div>' +
-      '<div class="hvai-bar"><button class="hvai-mic" aria-label="Hold to talk" title="Hold to talk">🎙</button><textarea class="hvai-in" rows="1" placeholder="Bolo ya likho… (Hindi / English / Hinglish)"></textarea><button class="hvai-send" aria-label="Send">➤</button></div>';
+      '<div class="hvai-bar"><div class="hvai-box"><textarea class="hvai-in" rows="1" placeholder="Bolo ya likho…"></textarea><button class="hvai-mic" aria-label="Hold to talk" title="Hold to talk">' + ICON_MIC + '</button><button class="hvai-send" aria-label="Send">' + ICON_SEND + '</button></div><div class="hvai-hint">Hold the mic to talk · Enter to send</div></div>';
     if (host.fabCSS) { const x = document.createElement("style"); x.textContent = host.fabCSS; document.head.appendChild(x); }   // e.g. lift it above a sticky button bar
     document.body.appendChild(fab); document.body.appendChild(panel);
     const log = panel.querySelector(".hvai-log"), input = panel.querySelector(".hvai-in"), mic = panel.querySelector(".hvai-mic"), send = panel.querySelector(".hvai-send");
     const save = () => { try { localStorage.setItem(HKEY, JSON.stringify(history.slice(-60))); } catch (e) {} };
     const scroll = () => { log.scrollTop = log.scrollHeight; };
     const add = (cls, html) => { const el = document.createElement("div"); el.className = cls; el.innerHTML = html; log.appendChild(el); scroll(); return el; };
-    const say = (who, text, keep) => { add("hvai-msg " + (who === "user" ? "me" : who === "sys" ? "sys" : "ai"), esc(text)); if (keep !== false && who !== "sys") { history.push({ role: who === "user" ? "user" : "ai", text }); save(); } };
-    const firstName = () => String((host.userName && host.userName()) || "Harsh").split(" ")[0];
+    const say = (who, text0, keep) => { const text = who === "user" ? text0 : to12(text0); add("hvai-msg " + (who === "user" ? "me" : who === "sys" ? "sys" : "ai"), esc(text)); if (keep !== false && who !== "sys") { history.push({ role: who === "user" ? "user" : "ai", text }); save(); } };
+    const firstName = () => { const n = String((host.userName && host.userName()) || "Harsh").trim().split(/\s+/)[0] || "Harsh"; return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); };
     const cfg = () => (host.getSettings && host.getSettings()) || {};
     const theme = () => panel.classList.toggle("dark", !!(host.isDark && host.isDark()));
     function open() {
@@ -495,7 +590,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     }
     function close() { panel.hidden = true; fab.hidden = false; }
     fab.addEventListener("click", open); panel.querySelector(".hvai-x").addEventListener("click", close);
-    input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = Math.min(120, input.scrollHeight) + "px"; });
+    const grow = () => { input.style.height = "auto"; const h = input.scrollHeight; input.style.height = Math.min(124, Math.max(40, h)) + "px"; input.style.overflowY = h > 124 ? "auto" : "hidden"; };
+    input.addEventListener("input", grow);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); run(); } });
     send.addEventListener("click", () => run());
 
@@ -582,6 +678,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       finally { busy = false; footer(batch); }
     }
     function prepare(action, h) {
+      action = normalize(action);
       const data = h.getData ? h.getData() : null;
       if ((action.type === "buildDayPlan" || action.type === "editDayPlan") && validate(action).ok) {
         const cur = action.type === "editDayPlan" && h.getPlan ? (h.getPlan() || {}).blocks : null;
@@ -596,7 +693,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     async function run(textIn) {
       const text = (textIn != null ? textIn : input.value).trim();
       if (!text || busy) return;
-      input.value = ""; input.style.height = "auto";
+      input.value = ""; grow();
       const c = cfg();
       say("user", text);
       if (!c.key || !c.provider || c.provider === "off") { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > AI first.", false); return; }
@@ -638,7 +735,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
               const t = await transcribe(c, wav);
               if (t.error) say("sys", t.error, false);
               else if (!t.text) say("sys", "Couldn't hear anything. Try again.", false);
-              else { input.value = t.text; input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap ➤", false); }
+              else { input.value = t.text; input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); }
             } catch (err) { say("sys", "Couldn't process the recording.", false); }
             finally { note.remove(); }
           };
@@ -650,7 +747,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         speech = new SR(); speech.lang = "en-IN"; speech.interimResults = true; speech.continuous = true;
         let finalText = "";
         speech.onresult = (ev) => { let s = ""; for (let i = 0; i < ev.results.length; i++) s += ev.results[i][0].transcript + " "; finalText = s.trim(); input.value = finalText; };
-        speech.onend = () => { mic.classList.remove("rec"); if (finalText) { input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap ➤", false); } };
+        speech.onend = () => { mic.classList.remove("rec"); if (finalText) { input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); } };
         speech.onerror = () => { mic.classList.remove("rec"); };
         try { speech.start(); mic.classList.add("rec"); } catch (err) {}
         return;
@@ -672,5 +769,5 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     return { open, close, run, showActions, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
   }
 
-  root.HVAI = { version: 1, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
+  root.HVAI = { version: 1, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
 })(typeof window !== "undefined" ? window : globalThis);

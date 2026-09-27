@@ -1,4 +1,4 @@
-/* HV AI command test set: 24 commands (Hinglish, Hindi, English, voice-style run-ons, ambiguous
+/* HV AI command test set: 25 commands (Hinglish, Hindi, English, voice-style run-ons, ambiguous
    names, deletes, relative dates). Each check looks only at the parsed + validated + resolved
    actions; nothing is executed. Used by HV Vault > Settings > "HV AI self-test" with the user's
    own key, and by the Node tests. Fixed data and a fixed "now" make the expectations exact. */
@@ -88,14 +88,19 @@
       return pass(e && e.action.args.date === "2026-09-29" && e.action.args.time === "15:00" && m && m.action.args.job_id === "j2" && m.action.args.stage === "Interview", "event 29 Sep 15:00 + Swiggy BD Manager → Interview"); }),
     T("Is hafte kitne applications gaye?", "Hinglish · question", (r) => {
       const a = of(r, "answer")[0]; return pass(a && /\b2\b|two|do\b/i.test(a.action.args.text) && !mutating(r).length, "answers 2 this week"); }),
+    T("Aaj ke saare tasks shaam 7:30 se shuru karo, sab shift kar do", "Hinglish · shift plan", (r) => {
+      const p = ready(r, "editDayPlan")[0]; if (!p) return pass(false, "no ready editDayPlan");
+      const b = p.action.args.blocks, at = (id, re) => b.find((x) => x.block_id === id || re.test(x.title));
+      const apply = at("apply1", /application/i), prep = at("prep", /prep/i), end = Math.max.apply(null, b.map((x) => min(x.start) + x.duration_min));
+      return pass(apply && prep && min(apply.start) >= 19 * 60 + 30 - 1 && min(prep.start) >= 19 * 60 + 30 && end <= 24 * 60 && b.some((x) => x.kind === "meal"), "applications + prep moved to 7:30 PM onwards, ends by midnight, a meal kept"); }),
   ];
 
   /* run one command through the real model and the same prepare path the widget uses */
   async function runOne(HVAI, cfg, t) {
     const ctx = HVAI.buildContext(DATA, PLAN, NOW);
-    const t0 = Date.now(); const r = await HVAI.interpret(cfg, t.cmd, ctx, []);
+    const t0 = Date.now(); const r = await HVAI.interpret(cfg, t.cmd, ctx, []);   // interpret() already tidies times/kinds (normalize)
     if (r.error) return { ok: false, why: r.error, actions: [], ms: Date.now() - t0 };
-    const res = (r.actions || []).map((a) => {
+    const res = (r.actions || []).map(HVAI.normalize).map((a) => {
       if ((a.type === "buildDayPlan" || a.type === "editDayPlan") && HVAI.validate(a).ok) {
         const f = HVAI.fixPlan(a.args.blocks, a.type === "editDayPlan" ? PLAN.blocks : null);
         return { status: "ready", action: { type: a.type, args: Object.assign({}, a.args, { blocks: f.blocks }) } };

@@ -180,6 +180,7 @@ const localISO = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStar
 const todayISO = () => localISO(new Date());
 const addDays = (iso, n) => { const d = new Date(iso + "T00:00:00"); d.setDate(d.getDate() + n); return localISO(d); };
 const daysBetween = (a, b) => Math.round((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / 86400000);
+const fmtTime = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(t || ""); if (!m) return t || ""; const h = +m[1]; return (h % 12 || 12) + ":" + m[2] + " " + (h >= 12 ? "PM" : "AM"); };   // "16:00" -> "4:00 PM"
 const fmtDate = (iso) => { if (!iso) return "—"; const d = new Date(iso + "T00:00:00"); return d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }); };
 const weekKey = (iso) => { const d = new Date(iso + "T00:00:00"); const day = (d.getDay() + 6) % 7; d.setDate(d.getDate() - day); return localISO(d); };
 const parseTags = (s) => (s || "").split(",").map((t) => t.trim()).filter(Boolean);
@@ -1130,7 +1131,7 @@ function applyAIActions(d0, actions, day) {
       const job = a.job_id && findJob(a.job_id);
       const ev = { id: uid(), title: a.title, type: a.type || "custom", date: a.date, time: a.time || "", company_id: job ? job.company_id : "", job_id: job ? job.id : "", contact: "", notes: a.notes || (a.duration_min ? a.duration_min + " min" : ""), status: "upcoming", priority: "Medium", reminder: "same" };
       touch("calendarEvents", ev.id); d = { ...d, calendarEvents: [...(d.calendarEvents || []), ev] };
-      messages.push("Added to calendar: " + ev.title + ", " + fmtDate(ev.date) + (ev.time ? " at " + ev.time : "") + ".");
+      messages.push("Added to calendar: " + ev.title + ", " + fmtDate(ev.date) + (ev.time ? " at " + fmtTime(ev.time) : "") + ".");
     }
   }
   return { data: d, undo, messages };
@@ -1675,7 +1676,7 @@ function buildActions(data, today) {
     actions.push({
       key: "ev-" + ev.id, kind: "event", id: ev.id, jobId: ev.job_id || null,
       company: ev.company_id ? cname(ev.company_id) : "Calendar", title: ev.title || "Event", status: "",
-      reason: overdue ? "Event date passed (" + fmtDate(ev.date) + ")" : (EVENT_TYPE_LABEL[ev.type] || "Event") + " on " + fmtDate(ev.date) + (ev.time ? " at " + ev.time : ""),
+      reason: overdue ? "Event date passed (" + fmtDate(ev.date) + ")" : (EVENT_TYPE_LABEL[ev.type] || "Event") + " on " + fmtDate(ev.date) + (ev.time ? " at " + fmtTime(ev.time) : ""),
       suggestion: overdue ? "Mark done, reschedule, or cancel it" : "Prepare — it's coming up",
       tone: overdue ? "late" : "info",
     });
@@ -1872,7 +1873,7 @@ function Dashboard({ data, setPage, setModal, openJob, moveJob, upsert, snoozeIt
                     <CalendarDays size={13} />
                     <div style={{ flex: 1 }}>
                       <div className="mini-title">{e.title} <Badge color={EVENT_COLORS[e.type]}>{EVENT_TYPE_LABEL[e.type]}</Badge></div>
-                      <div className="mini-sub">{fmtDate(e.date)}{e.time ? " · " + e.time : ""}</div>
+                      <div className="mini-sub">{fmtDate(e.date)}{e.time ? " · " + fmtTime(e.time) : ""}</div>
                     </div>
                   </li>
                 ))}
@@ -4282,7 +4283,7 @@ function CalendarPage({ data, upsert, remove, notify, openJob, openCompany, setP
       style={{ borderLeftColor: EVENT_COLORS[e.type] || "#8A8F9C" }}
       title={e.title + (e.company_id ? " · " + companyName(e.company_id) : "")}
       onClick={(ev) => { ev.stopPropagation(); clickEvent(e); }}>
-      {e.time && <span className="mono">{e.time} </span>}{full ? e.title : (e.title.length > 22 ? e.title.slice(0, 21) + "…" : e.title)}
+      {e.time && <span className="mono">{fmtTime(e.time)} </span>}{full ? e.title : (e.title.length > 22 ? e.title.slice(0, 21) + "…" : e.title)}
     </button>
   );
 
@@ -4375,7 +4376,7 @@ function CalendarPage({ data, upsert, remove, notify, openJob, openCompany, setP
                   <div key={e.id} className="agenda-row">
                     <Badge color={EVENT_COLORS[e.type]}>{EVENT_TYPE_LABEL[e.type]}</Badge>
                     <button className="link-cell" onClick={() => clickEvent(e)}>{e.title}</button>
-                    <span className="muted small">{e.company_id ? companyName(e.company_id) : ""}{e.time ? " · " + e.time : ""}{e.contact ? " · " + e.contact : ""}</span>
+                    <span className="muted small">{e.company_id ? companyName(e.company_id) : ""}{e.time ? " · " + fmtTime(e.time) : ""}{e.contact ? " · " + e.contact : ""}</span>
                     <span className="agenda-right">
                       <Badge color={EVENT_STATUS_COLORS[e.dstatus]}>{e.dstatus}</Badge>
                       {e.dstatus !== "done" && e.dstatus !== "cancelled" && (e.source === "manual" || e.source === "fu") &&
@@ -4456,6 +4457,14 @@ const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.8.1": {
+    title: "HV AI, polished",
+    points: [
+      "A cleaner HV AI chat: one tidy message box with the mic and Send inside it, in the same look as the rest of the app",
+      "All times now show in 12-hour format with AM and PM, in HV AI's replies and across the app",
+      "\"Sab 7:30 PM se shuru karo\" now shifts your whole day plan: finished blocks stay put, meals are kept, and a late plan is fitted before midnight",
+    ],
+  },
   "2.8.0": {
     title: "Meet HV AI",
     points: [
@@ -4583,7 +4592,7 @@ function useCloud() {
 function CloudSyncCard({ notify }) {
   const { cloud, user, st } = useCloud();
   if (!cloud) return null;
-  const since = st.last ? new Date(st.last).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "";
+  const since = st.last ? fmtTime(new Date(st.last).toTimeString().slice(0, 5)) : "";
   const signIn = async () => { try { await cloud.signIn(); } catch (e) { notify("Sign-in failed: " + (e.message || e)); } };
   return (
     <div className="card">

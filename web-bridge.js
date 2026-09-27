@@ -118,7 +118,9 @@ if (typeof window !== "undefined" && !window.storage) {
     const remoteHas = !!(rMain && contentOf(rMain.value));
     const localMain = await idbGet(MAIN);
     const localHas = !!(localMain && contentOf(localMain));
-    let adopt = remoteHas && !localHas;
+    // A device with nothing of its own always takes the account's data. Only a device with
+    // real data may replace the cloud, and only if the cloud is empty or the user says so.
+    let adopt = !localHas;
     if (remoteHas && localHas) {
       adopt = window.confirm("HV Vault sync: this device and your cloud account both have data.\n\n" +
         "OK = use the cloud data on this device (this device's current data is kept as a backup).\n" +

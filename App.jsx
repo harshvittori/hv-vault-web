@@ -7,7 +7,7 @@ import {
   BarChart3, Settings, Search, Plus, X, Pencil, Trash2, ExternalLink, Download,
   Upload, ChevronRight, ChevronDown, Clock, CheckCircle2, AlertTriangle, Copy,
   Tag as TagIcon, Moon, Sun, FileText, Star, BookOpen, ListTodo, MessageSquareText,
-  Sparkles, Eye, Files, AlarmClock, CircleDot, GraduationCap, Zap, User, Wand2, Image as ImageIcon, CalendarDays, ChevronLeft, RotateCcw,
+  Sparkles, Eye, Files, AlarmClock, CircleDot, GraduationCap, Zap, User, Wand2, Image as ImageIcon, CalendarDays, ChevronLeft, RotateCcw, Cloud, Info, RefreshCw, LogOut, ShieldCheck, FileDown, FileUp, Archive,
 } from "lucide-react";
 import "./shared/apply-rule.js";   // window.HVApplyRule: the 2-minute apply rule shared with HV Reset
 import "./shared/hv-ai.js";        // window.HVAI: the HV AI assistant shared with HV Reset
@@ -686,9 +686,9 @@ export default function HVVault() {
       return out;
     };
     aiRef.current = window.HVAI.mount({
-      app: "vault", logoSVG: HV_LOGO_SVG, keyHelp: HVAI_KEY_HELP, canPlan: false,
+      app: "vault", logoSVG: HV_LOGO_SVG, keyHelp: IS_WEB() ? HVAI_WEB_HELP : HVAI_KEY_HELP, canPlan: false,
       getData: () => dataRef.current,
-      getSettings: () => { const st = dataRef.current.settings; return { provider: st.aiProvider, key: st.aiKey, model: st.aiModel }; },
+      getSettings: () => window.HVAI.pickConfig(dataRef.current.settings),   // the built-in AI on the website; a key only on desktop
       getContext: () => window.HVAI.buildContext(dataRef.current, null),
       userName: () => dataRef.current.settings.myName || "Harsh",
       isDark: () => dataRef.current.settings.theme === "dark",
@@ -3082,10 +3082,10 @@ function ResumeVault({ data, setData, upsert, remove, notify, companyName, openP
     let parsed = localParseResume(rawText);
     let usedAI = false;
     const ai = data.settings || {};
-    if (ai.aiProvider && ai.aiProvider !== "off" && ai.aiKey && rawText && typeof window !== "undefined" && window.hv && window.hv.aiParse) {
-      notify("Asking AI to structure the resume…");
+    if (aiAvailable(ai) && rawText) {
+      notify("Reading the resume with AI…");
       let r = null;
-      try { r = await window.hv.aiParse({ provider: ai.aiProvider, apiKey: ai.aiKey, model: ai.aiModel || "", text: rawText }); }
+      try { r = await runParse(ai, rawText); }
       catch (err) { r = { error: "Unexpected error talking to AI" }; }
       if (r && r.ok && r.data) {
         const merged = { ...parsed };
@@ -3328,10 +3328,9 @@ function ParseReviewModal({ payload, settings, onSave, onClose, notify }) {
 
   const rerunLocal = () => { setF({ ...localParseResume(raw) }); notify("Local parse re-run — review below"); };
   const rerunAI = async () => {
-    if (!(settings.aiProvider && settings.aiProvider !== "off" && settings.aiKey)) return notify("Enable an AI provider and add your key in Settings > HV AI first");
-    if (!(typeof window !== "undefined" && window.hv && window.hv.aiParse)) return notify("AI parsing works in the desktop app");
+    if (!aiAvailable(settings)) return notify(AI_OFF_MSG());
     setBusy(true);
-    const r = await window.hv.aiParse({ provider: settings.aiProvider, apiKey: settings.aiKey, model: settings.aiModel || "", text: raw });
+    const r = await runParse(settings, raw);
     setBusy(false);
     if (r && r.ok && r.data) {
       const m = { ...f };
@@ -3630,7 +3629,7 @@ function AutofillModal({ kind, settings, notify, onClose, onExtract }) {
   const [busy, setBusy] = useState(false);
   const pdfRef = useRef(null);
   const imgRef = useRef(null);
-  const aiReady = st.aiProvider && st.aiProvider !== "off" && st.aiKey && typeof window !== "undefined" && window.hv && window.hv.aiExtract;
+  const aiReady = aiAvailable(st);
 
   const onPdf = async (file) => {
     if (!file) return;
@@ -3656,13 +3655,10 @@ function AutofillModal({ kind, settings, notify, onClose, onExtract }) {
     toast("Screenshot added — click Extract");
   };
   const run = async () => {
-    if (!aiReady) return toast("Add your key in Settings > HV AI first — AI is optional and off by default");
+    if (!aiReady) return toast(AI_OFF_MSG());
     if (!text.trim() && !img) return toast("Paste the JD, upload a PDF, or add a screenshot first");
     setBusy(true);
-    const r = await window.hv.aiExtract({
-      provider: st.aiProvider, apiKey: st.aiKey, model: st.aiModel || "", kind,
-      text: text.trim(), imageBase64: img ? img.data : "", imageMime: img ? img.mime : "",
-    });
+    const r = await runExtract(st, { kind, text: text.trim(), imageBase64: img ? img.data : "", imageMime: img ? img.mime : "" });
     setBusy(false);
     if (r && r.ok && r.data) { toast("Extracted ✓ — review every field before saving"); onExtract(r.data); }
     else toast("AI failed: " + ((r && r.error) || "unknown error"));
@@ -3671,7 +3667,7 @@ function AutofillModal({ kind, settings, notify, onClose, onExtract }) {
   return (
     <Modal title={"Auto-fill " + (kind === "company" ? "company" : "job") + " with AI"} onClose={onClose}>
       {!aiReady && (
-        <p className="hint-strip"><Sparkles size={14} /><span>AI is currently off. Add your own Gemini/OpenRouter key in Settings > HV AI to use auto-fill. Nothing is sent anywhere until you click Extract.</span></p>
+        <p className="hint-strip"><Sparkles size={14} /><span>{IS_WEB() ? "AI isn't available right now. Reload the page and try again." : "AI is off. Add your Gemini or OpenRouter key in Settings > HV AI to use auto-fill. Nothing is sent anywhere until you click Extract."}</span></p>
       )}
       <div className="tabs" style={{ marginBottom: 12 }}>
         <button className={"tab " + (tab === "paste" ? "active" : "")} onClick={() => setTab("paste")}>Paste text</button>
@@ -4485,9 +4481,30 @@ function EventModal({ initial, data, onSave, onDelete, onClose }) {
    Add an entry here for every release. */
 /* Web vs desktop wording. The same App.jsx ships as the Windows app and the website. */
 const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.isWeb);
+/* AI: on the website every AI feature uses the site's built-in AI (no key, ever). The desktop app has no
+   built-in AI, so there it uses the key saved in Settings. */
+const AI_BUILTIN = () => typeof window !== "undefined" && !!(window.hv && window.hv.aiBuiltIn);
+const ownKeyOn = (st) => !!(st && st.aiProvider && st.aiProvider !== "off" && st.aiKey);
+const aiAvailable = (st) => AI_BUILTIN() || (ownKeyOn(st) && typeof window !== "undefined" && !!window.hv);
+const AI_OFF_MSG = () => (IS_WEB() ? "AI isn't available right now. Reload the page and try again" : "Add your AI key in Settings > HV AI first");
+function runExtract(st, req) {       // job / company / profile details from text or a screenshot
+  if (AI_BUILTIN()) return window.hv.aiExtractProject(req);
+  return window.hv.aiExtract({ provider: st.aiProvider, apiKey: st.aiKey, model: st.aiModel || "", ...req });
+}
+function runParse(st, text) {        // resume text → profile fields
+  if (AI_BUILTIN()) return window.hv.aiParseProject({ text, pdfBase64: null });
+  return window.hv.aiParse({ provider: st.aiProvider, apiKey: st.aiKey, model: st.aiModel || "", text });
+}
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.9.0": {
+    title: "HV AI, ready out of the box",
+    points: [
+      "Every AI feature now runs on HV Vault's built-in AI: the HV AI chat and voice (here and in HV Reset), resume reading, and job and company auto-fill. No key to paste, ever",
+      "A cleaner Settings page: simple grouped rows for account, HV AI, follow-ups, your data and about, with the long explanations and extra boxes gone",
+    ],
+  },
   "2.8.3": {
     title: "A cleaner Profile and Settings",
     points: [
@@ -4642,29 +4659,22 @@ function CloudSyncCard({ notify }) {
   const since = st.last ? fmtTime(new Date(st.last).toTimeString().slice(0, 5)) : "";
   const signIn = async () => { try { await cloud.signIn(); } catch (e) { notify("Sign-in failed: " + (e.message || e)); } };
   return (
-    <div className="card">
-      <h3 className="card-title">Sync across devices</h3>
+    <SetGroup title="Account">
       {!cloud.configured ? (
-        <p className="muted small">Cloud sync isn't set up for this site yet (firebase-config.js is empty). Your data is saved in this browser only.</p>
+        <SetRow icon={Cloud} title="Saved in this browser only" sub="Cloud sync isn't set up for this site." />
       ) : !user ? (
-        <>
-          <p style={{ marginBottom: 10 }}>Sign in with Google to keep HV Vault the same on your phone and laptop, and connected to HV Reset. Your data goes to your own private space; nobody else can read it.</p>
-          <button className="btn btn-primary" onClick={signIn}>Sign in with Google</button>
-        </>
-      ) : (
-        <>
-          <p style={{ marginBottom: 6 }}>Signed in as <strong>{user.email || user.name}</strong></p>
-          <p className="muted small" style={{ marginBottom: 10 }}>
-            {st.state === "syncing" ? "Syncing…" : st.state === "error" ? "Sync problem: " + st.error + ". It retries automatically." : since ? "Synced at " + since + ". Changes from other devices arrive within 15 seconds." : "Connected."}
-          </p>
-          <div className="btn-row">
-            <button className="btn btn-ghost btn-sm" onClick={() => cloud.syncNow()}>Sync now</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => cloud.signOut()}>Sign out</button>
-          </div>
-          <p className="muted small" style={{ marginTop: 8 }}>Signing out removes your data from this browser. It stays safe in your Google account.</p>
-        </>
-      )}
-    </div>
+        <SetRow icon={Cloud} title="Not signed in" sub="Sign in to keep your phone and laptop in sync.">
+          <button className="btn btn-primary btn-sm" onClick={signIn}>Sign in with Google</button>
+        </SetRow>
+      ) : (<>
+        <SetRow icon={User} title={user.email || user.name}
+          sub={st.state === "syncing" ? "Syncing…" : st.state === "error" ? "Sync problem: " + st.error + ". Retrying" : since ? "Synced at " + since : "Connected"}>
+          <button className="btn btn-ghost btn-sm" onClick={() => cloud.syncNow()}><RefreshCw size={13} /> Sync now</button>
+          <button className="btn btn-ghost btn-sm" onClick={() => cloud.signOut()}><LogOut size={13} /> Sign out</button>
+        </SetRow>
+        <SetRow icon={ShieldCheck} title="Private to your Google account" sub="Only you can see your data. Signing out clears this browser; your data stays in your account." />
+      </>)}
+    </SetGroup>
   );
 }
 
@@ -4785,11 +4795,12 @@ function WizardCloudLink({ onClose }) {
 function HVAISelfTest({ settings }) {
   const [rows, setRows] = useState([]);
   const [running, setRunning] = useState(false);
+  const [open, setOpen] = useState(false);
   const T = typeof window !== "undefined" && window.HVAI_TESTS;
-  const cfg = { provider: settings.aiProvider, key: settings.aiKey, model: settings.aiModel };
-  const hasKey = cfg.key && cfg.provider && cfg.provider !== "off";
+  const cfg = window.HVAI ? window.HVAI.pickConfig(settings) : {};
+  const hasKey = !!(window.HVAI && window.HVAI.hasAI(cfg));
   const run = async () => {
-    setRunning(true); setRows([]);
+    setRunning(true); setRows([]); setOpen(true);
     const out = [];
     for (const t of T.TESTS) {
       let r; try { r = await T.runOne(window.HVAI, cfg, t); } catch (e) { r = { ok: false, why: String(e && e.message || e), actions: [] }; }
@@ -4798,33 +4809,49 @@ function HVAISelfTest({ settings }) {
     setRunning(false);
   };
   const passed = rows.filter((x) => x.r.ok).length;
-  return (
-    <div className="card">
-      <h3 className="card-title">HV AI self-test</h3>
-      <p className="muted small" style={{ marginBottom: 10 }}>Runs {T ? T.TESTS.length : 0} sample commands (Hinglish, Hindi, English, voice-style) through HV AI with your key and checks the actions it proposes. It uses sample data, not yours, and changes nothing.</p>
-      {!hasKey ? <p className="muted small">Add your AI key below first.</p> : (
-        <button className="btn btn-primary btn-sm" disabled={running || !T} onClick={run}>{running ? "Running " + rows.length + "/" + T.TESTS.length + "…" : rows.length ? "Run again" : "Run self-test"}</button>
-      )}
-      {rows.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <p style={{ fontWeight: 700, marginBottom: 6 }}>{passed}/{rows.length} passed</p>
-          {rows.map(({ t, r }, i) => (
-            <div key={i} style={{ borderTop: "1px solid var(--line)", padding: "7px 0", fontSize: 13 }}>
-              <div><span style={{ color: r.ok ? "var(--green)" : "var(--red)", fontWeight: 700 }}>{r.ok ? "PASS" : "FAIL"}</span> <span className="muted">[{t.lang}]</span> {t.cmd}</div>
-              <div className="muted">Expected: {r.why}{r.ms ? " · " + (r.ms / 1000).toFixed(1) + "s" : ""}</div>
-              <div className="muted mono" style={{ fontSize: 11.5 }}>{(r.actions || []).map((a) => a.action.type + "(" + a.status + ")" + (a.action.args ? " " + JSON.stringify(a.action.args).slice(0, 160) : "")).join(" ; ")}</div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  if (!T || !hasKey) return null;
+  return (<>
+    <SetRow icon={CheckCircle2} title="Full check" sub={rows.length ? passed + "/" + rows.length + " commands passed" : "Tries " + T.TESTS.length + " sample commands on sample data. Changes nothing."}>
+      {rows.length > 0 && !running && <button className="btn btn-ghost btn-sm" onClick={() => setOpen((x) => !x)}>{open ? "Hide" : "Details"}</button>}
+      <button className="btn btn-ghost btn-sm" disabled={running} onClick={run}>{running ? "Running " + rows.length + "/" + T.TESTS.length + "…" : rows.length ? "Run again" : "Run"}</button>
+    </SetRow>
+    {open && rows.length > 0 && (
+      <div className="set-detail">
+        {rows.map(({ t, r }, i) => (
+          <div key={i} style={{ borderTop: i ? "1px solid var(--line)" : 0, padding: "7px 0", fontSize: 13 }}>
+            <div><span style={{ color: r.ok ? "var(--green)" : "var(--red)", fontWeight: 700 }}>{r.ok ? "PASS" : "FAIL"}</span> <span className="muted">[{t.lang}]</span> {t.cmd}</div>
+            <div className="muted">Expected: {r.why}{r.ms ? " · " + (r.ms / 1000).toFixed(1) + "s" : ""}</div>
+            <div className="muted mono" style={{ fontSize: 11.5 }}>{(r.actions || []).map((a) => a.action.type + "(" + a.status + ")" + (a.action.args ? " " + JSON.stringify(a.action.args).slice(0, 160) : "")).join(" ; ")}</div>
+          </div>
+        ))}
+      </div>
+    )}
+  </>);
 }
 
 /* HV AI key. Resume reading uses the site's built-in AI (web) and needs nothing here;
    this key is only for the HV AI assistant in HV Vault and HV Reset. */
 function HVAIKeyCard({ s, set, setData, notify }) {
   const [adv, setAdv] = useState(false);
+  const [testing, setTesting] = useState(false);
+  if (IS_WEB()) {                                        // website: the built-in AI, nothing to set up
+    const on = AI_BUILTIN();
+    const test = async () => {
+      setTesting(true);
+      const r = window.hv.aiTestProject ? await window.hv.aiTestProject() : { error: "Not available" };
+      setTesting(false);
+      notify(r && r.ok ? "✓ HV AI is working" : "✕ " + ((r && r.error) || "HV AI didn't answer"));
+    };
+    return (
+      <SetGroup title="HV AI">
+        <SetRow icon={Sparkles} title={on ? "On, built in" : "Not available right now"}
+          sub={on ? "Chat, voice, resume reading and job auto-fill, here and in HV Reset. No key needed." : "Reload the page and try again."}>
+          {on && <button className="btn btn-ghost btn-sm" disabled={testing} onClick={test}>{testing ? "Checking…" : "Test"}</button>}
+        </SetRow>
+        <HVAISelfTest settings={s} />
+      </SetGroup>
+    );
+  }
   const web = IS_WEB();
   const on = !!(s.aiKey && s.aiProvider && s.aiProvider !== "off");
   const test = async () => {
@@ -4869,11 +4896,37 @@ function HVAIKeyCard({ s, set, setData, notify }) {
   );
 }
 
+/* Settings layout: grouped rows, like a phone's settings app */
+function SetGroup({ title, danger, children }) {
+  return (
+    <section className={"set-group" + (danger ? " danger" : "")}>
+      {title && <h3 className="set-group-title">{title}</h3>}
+      <div className="card set-list">{children}</div>
+    </section>
+  );
+}
+function SetRow({ icon: I, title, sub, children }) {
+  return (
+    <div className="set-row">
+      {I && <span className="set-ic"><I size={17} strokeWidth={1.9} /></span>}
+      <div className="set-text"><div className="set-title">{title}</div>{sub && <div className="set-sub">{sub}</div>}</div>
+      {children && <div className="set-right">{children}</div>}
+    </div>
+  );
+}
+
+function AboutRow() {
+  const [ver, setVer] = useState("");
+  useEffect(() => { const hv = typeof window !== "undefined" && window.hv; if (hv && hv.getAppVersion) hv.getAppVersion().then((v) => setVer(v || "")).catch(() => {}); }, []);
+  return <SetRow icon={Info} title={"HV Vault" + (ver ? " v" + ver : "")} sub="Updates automatically. You always have the latest version." />;
+}
+
 function SettingsPage({ data, setData, notify }) {
   const s = data.settings;
   const set = (k) => (e) => setData((d) => ({ ...d, settings: { ...d.settings, [k]: e.target.value } }));
   const importRef = useRef(null);
   const importKindRef = useRef("jobs");
+  const [exportKind, setExportKind] = useState("jobs");
 
   const exportJobs = () => {
     const rows = data.jobs.map((j) => ({
@@ -4990,78 +5043,54 @@ function SettingsPage({ data, setData, notify }) {
 
   return (
     <div>
-      <PageHead title="Settings" sub="Your preferences power the templates, follow-up timing, and dashboard" />
-      <UpdatesCard />
-      <CloudSyncCard notify={notify} />
-      {IS_WEB() && <HVAISelfTest settings={data.settings} />}
+      <PageHead title="Settings" />
+      <div className="set-wrap">
+        <CloudSyncCard notify={notify} />
 
-      <div className="card">
-        <h3 className="card-title">Privacy — how your data is handled</h3>
-        {(typeof window !== "undefined" && window.hv && window.hv.isWeb) ? (
-          <p className="muted small">You sign in with Google, and everything you enter is saved to <strong>your own private space in Firebase</strong> (Cloud Firestore). Security rules let only your signed-in account read or write it. This browser keeps a working copy for speed, and signing out removes it; your data stays in your account. There is no analytics or tracking. The only other place anything goes is the AI provider you choose, if you turn on AI parsing, using your own key. Use Export below now and then for an extra backup.</p>
-        ) : (
-          <p className="muted small">HV Vault is a fully local app: no account, no cloud sync, no analytics, no tracking. Your data lives in <span className="mono">Documents\HV-Vault\data\hv-vault-data.json</span> and uploaded resumes in <span className="mono">Documents\HV-Vault\uploads\</span> on this PC. The only time anything leaves your computer is if you enable optional AI parsing — then the extracted resume text goes to the provider you chose, using your own key. Back up anytime with Export below.</p>
-        )}
-      </div>
+        <HVAIKeyCard s={s} set={set} setData={setData} notify={notify} />
 
-      <div className="card">
-        <h3 className="card-title">Follow-ups</h3>
-        <div className="form-grid">
-          <Field label="Default follow-up gap (days)"><input className="input" type="number" min="1" max="30" value={s.followupGap} onChange={set("followupGap")} /></Field>
-        </div>
-        <p className="muted small">Your name, target role, locations, skills and links now live on the Profile page.</p>
-      </div>
+        <SetGroup title="Follow-ups">
+          <SetRow icon={AlarmClock} title="Default follow-up gap" sub="Days after applying until the first follow-up">
+            <input className="input set-num" type="number" min="1" max="30" value={s.followupGap} onChange={set("followupGap")} aria-label="Default follow-up gap in days" />
+          </SetRow>
+        </SetGroup>
 
-      <HVAIKeyCard s={s} set={set} setData={setData} notify={notify} />
-
-      <div className="card">
-        <h3 className="card-title">Export data (CSV)</h3>
-        <div className="btn-row">
-          <button className="btn btn-ghost" onClick={exportJobs}><Download size={14} /> Jobs</button>
-          <button className="btn btn-ghost" onClick={exportCompanies}><Download size={14} /> Companies</button>
-          <button className="btn btn-ghost" onClick={exportFollowups}><Download size={14} /> Follow-ups</button>
-          <button className="btn btn-ghost" onClick={exportEvents}><Download size={14} /> Calendar events</button>
-          <button className="btn btn-ghost" onClick={exportAnalytics}><Download size={14} /> Analytics summary</button>
-        </div>
-        <p className="muted small">Open in Excel or Google Sheets. Uploaded resume files stay in the vault — download them individually from the Vault page.</p>
-      </div>
-
-      <div className="card">
-        <h3 className="card-title">Import data (CSV)</h3>
-        <div className="btn-row">
-          <button className="btn btn-ghost" onClick={() => startImport("jobs")}><Upload size={14} /> Import jobs</button>
-          <button className="btn btn-ghost" onClick={() => startImport("companies")}><Upload size={14} /> Import companies</button>
-          <input ref={importRef} type="file" accept=".csv" style={{ display: "none" }} onChange={handleImport} />
-        </div>
-        <p className="muted small">Jobs CSV: <span className="mono">title, company, status, source, location, deadline, tags ("; " separated), notes…</span> Unknown companies are created automatically.</p>
-      </div>
-
-      {typeof window !== "undefined" && window.hv && (
-        <div className="card">
-          <h3 className="card-title">{(typeof window !== "undefined" && window.hv && window.hv.isWeb) ? "Backup & restore (full data + resume files)" : "Desktop backup & restore (full data + resume files)"}</h3>
-          <div className="btn-row">
-            <button className="btn btn-ghost" onClick={async () => {
-              const r = await window.hv.exportBackup();
-              if (r && r.path) notify("Backup saved: " + r.path);
-            }}><Download size={14} /> Export full backup (.json)</button>
-            <button className="btn btn-ghost" onClick={async () => {
-              const r = await window.hv.importBackup();
-              if (r && r.count) { notify("Imported " + r.count + " records — reloading…"); setTimeout(() => window.location.reload(), 900); }
-              else if (r && r.error) notify("Import failed: " + r.error);
-            }}><Upload size={14} /> Import / restore backup</button>
-          </div>
-          {(typeof window !== "undefined" && window.hv && window.hv.isWeb) ? (
-            <p className="muted small">Your data lives in your Google account, with a working copy in this browser. Export saves a <span className="mono">.json</span> file to your Downloads — import it on any other browser or device to move everything across. It is also compatible with the desktop app. The backup includes jobs, companies, follow-ups, resumes, profile, calendar events, and analytics preferences.</p>
-          ) : (
-            <p className="muted small">Data file: <span className="mono">Documents\HV-Vault\data\hv-vault-data.json</span> · Resume files: <span className="mono">Documents\HV-Vault\uploads\</span>. The backup includes everything — jobs, companies, follow-ups, resumes, profile, calendar events, and analytics preferences.</p>
+        <SetGroup title="Your data">
+          <SetRow icon={FileDown} title="Export to Excel (CSV)" sub="Opens in Excel or Google Sheets">
+            <select className="input set-sel" value={exportKind} onChange={(e) => setExportKind(e.target.value)} aria-label="What to export">
+              <option value="jobs">Jobs</option><option value="companies">Companies</option><option value="followups">Follow-ups</option>
+              <option value="events">Calendar events</option><option value="analytics">Analytics summary</option>
+            </select>
+            <button className="btn btn-ghost btn-sm" onClick={() => ({ jobs: exportJobs, companies: exportCompanies, followups: exportFollowups, events: exportEvents, analytics: exportAnalytics }[exportKind])()}><Download size={13} /> Export</button>
+          </SetRow>
+          <SetRow icon={FileUp} title="Import from CSV" sub="New companies are created automatically">
+            <button className="btn btn-ghost btn-sm" onClick={() => startImport("jobs")}>Jobs</button>
+            <button className="btn btn-ghost btn-sm" onClick={() => startImport("companies")}>Companies</button>
+            <input ref={importRef} type="file" accept=".csv" style={{ display: "none" }} onChange={handleImport} />
+          </SetRow>
+          {typeof window !== "undefined" && window.hv && (
+            <SetRow icon={Archive} title="Full backup" sub="Everything, including resume files, in one .json file">
+              <button className="btn btn-ghost btn-sm" onClick={async () => { const r = await window.hv.exportBackup(); if (r && r.path) notify("Backup saved: " + r.path); }}><Download size={13} /> Download</button>
+              <button className="btn btn-ghost btn-sm" onClick={async () => {
+                const r = await window.hv.importBackup();
+                if (r && r.count) { notify("Imported " + r.count + " records — reloading…"); setTimeout(() => window.location.reload(), 900); }
+                else if (r && r.error) notify("Import failed: " + r.error);
+              }}><Upload size={13} /> Restore</button>
+            </SetRow>
           )}
-        </div>
-      )}
+        </SetGroup>
 
-      <div className="card danger-card">
-        <h3 className="card-title">Danger zone</h3>
-        <button className="btn btn-danger" onClick={resetAll}><Trash2 size={14} /> Reset all data</button>
-        <p className="muted small">Deletes everything including uploaded resume files. Export first.</p>
+        {IS_WEB() ? (
+          <SetGroup title="About">
+            <AboutRow />
+          </SetGroup>
+        ) : <UpdatesCard />}
+
+        <SetGroup title="Danger zone" danger>
+          <SetRow icon={Trash2} title="Delete all data" sub="Removes everything, including resume files. Download a backup first.">
+            <button className="btn btn-danger btn-sm" onClick={resetAll}>Delete</button>
+          </SetRow>
+        </SetGroup>
       </div>
     </div>
   );
@@ -5086,6 +5115,7 @@ function SettingsPage({ data, setData, notify }) {
        ~64px — it will blur. Do not use COMPACT above ~96px — it will
        look chunky instead of premium. */
 const HV_LOGO_SVG = '<svg viewBox="0 0 1024 1024" aria-hidden="true"><defs><linearGradient id="hvaimk" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1B3157"/><stop offset=".5" stop-color="#152647"/><stop offset="1" stop-color="#0C1830"/></linearGradient></defs><rect width="1024" height="1024" rx="230" fill="url(#hvaimk)"/><path d="M 608.00 360.68 A 179.2 179.2 0 1 1 416.00 360.68" fill="none" stroke="#DFC18A" stroke-width="96" stroke-linecap="round"/><path d="M 608.00 206.74 A 320 320 0 1 1 416.00 206.74" fill="none" stroke="#C9A45E" stroke-width="83.2" stroke-linecap="round"/><circle cx="512" cy="512" r="96" fill="#EAD9B0"/></svg>';
+const HVAI_WEB_HELP = "HV AI couldn't start: the site's built-in AI isn't reachable right now. Reload the page, check your internet, and turn off ad or tracker blockers for this site.";
 const HVAI_KEY_HELP = "HV AI needs your AI key once. Open Settings > HV AI, paste your Gemini key (free: aistudio.google.com > Get API key) and save. HV Reset then uses the same key automatically.";
 
 function BrandMark({ size = 38 }) {
@@ -5613,6 +5643,23 @@ tr:hover td{background:var(--hover)}
   box-shadow:var(--shadow-lg);z-index:100;animation:toastIn .2s ease}
 @keyframes toastIn{from{transform:translate(-50%,10px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
 .toast svg{color:var(--green)}
+.set-wrap{max-width:780px}
+.set-group{margin-bottom:22px}
+.set-group-title{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--slate2);margin:0 0 8px 8px}
+.card.set-list{padding:0;margin-bottom:0;overflow:hidden;border-radius:20px}
+.set-row{display:flex;align-items:center;gap:14px;padding:14px 18px;min-height:62px}
+.set-row+.set-row,.set-detail+.set-row,.set-row+.set-detail{border-top:1px solid var(--line)}
+.set-ic{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;flex:none;background:color-mix(in srgb,var(--accent) 12%,transparent);color:var(--accent)}
+.set-text{flex:1;min-width:0}
+.set-title{font-weight:700;overflow-wrap:anywhere}
+.set-sub{font-size:13px;color:var(--slate2);margin-top:2px}
+.set-right{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.set-num{width:84px;text-align:center}
+.set-sel{width:auto;min-width:150px}
+.set-detail{padding:4px 18px 12px 66px;max-height:420px;overflow:auto}
+.set-group.danger .set-ic{background:color-mix(in srgb,var(--red) 12%,transparent);color:var(--red)}
+.set-group.danger .set-list{border-color:color-mix(in srgb,var(--red) 30%,var(--line))}
+@media(max-width:640px){.set-row{flex-wrap:wrap}.set-right{width:100%;justify-content:flex-start;padding-left:48px}.set-detail{padding-left:18px}}
 .danger-card{border-color:color-mix(in srgb,var(--red) 35%,var(--line))}
 .loading-screen{display:flex;flex-direction:column;gap:13px;align-items:center;justify-content:center;
   width:100%;min-height:100vh;color:var(--slate2);font-size:14px}

@@ -14,7 +14,7 @@
   const SDK = "https://www.gstatic.com/firebasejs/10.12.2/";
   const CHUNK = 900000;                               // Firestore doc limit is 1 MiB
   const subs = new Set();
-  let auth = null, user = null, readyResolve;
+  let auth = null, appCheck = null, user = null, readyResolve;
   const ready = new Promise((r) => (readyResolve = r));
 
   const emit = () => subs.forEach((cb) => { try { cb(user); } catch (e) {} });
@@ -29,7 +29,15 @@
     if (T) { T.auth.onChange(setUser); return; }
     try {
       if (!window.firebase) { await load(SDK + "firebase-app-compat.js"); await load(SDK + "firebase-auth-compat.js"); }
+      if (cfg.appCheckSiteKey && !window.firebase.appCheck) await load(SDK + "firebase-app-check-compat.js");
       if (!window.firebase.apps.length) window.firebase.initializeApp(cfg);
+      // App Check (reCAPTCHA) proves requests come from this site; it must start before other services.
+      if (cfg.appCheckSiteKey && window.firebase.appCheck) {
+        try {
+          appCheck = window.firebase.appCheck();
+          appCheck.activate(cfg.appCheckProvider === "enterprise" ? new window.firebase.appCheck.ReCaptchaEnterpriseProvider(cfg.appCheckSiteKey) : cfg.appCheckSiteKey, true);
+        } catch (e) { appCheck = null; }
+      }
       auth = window.firebase.auth();
       auth.onAuthStateChanged(setUser);
     } catch (e) { readyResolve(); }
@@ -41,12 +49,16 @@
     if (T) return T.auth.token();
     return auth.currentUser ? auth.currentUser.getIdToken() : null;
   }
+  async function appCheckToken() {
+    if (!appCheck) return null;
+    try { const r = await appCheck.getToken(false); return (r && r.token) || null; } catch (e) { return null; }
+  }
   async function req(method, path, body) {
     if (!user) throw new Error("Not signed in");
-    const t = await token();
+    const t = await token(), ac = await appCheckToken();
     const r = await fetch(url(path), {
       method, cache: "no-store",
-      headers: Object.assign({ Authorization: "Bearer " + t }, body ? { "Content-Type": "application/json" } : {}),
+      headers: Object.assign({ Authorization: "Bearer " + t }, ac ? { "X-Firebase-AppCheck": ac } : {}, body ? { "Content-Type": "application/json" } : {}),
       body: body ? JSON.stringify(body) : undefined,
     });
     if (r.status === 404) return null;
@@ -101,7 +113,8 @@
       await auth.signInWithPopup(p);
     },
     async signOut() { if (T) return T.auth.signOut(); if (auth) await auth.signOut(); },
-    req, str, num, putValue, getValue, delValue,
+    req, str, num, putValue, getValue, delValue, appCheckToken,
+    get appCheckOn() { return !!appCheck; },
   };
   init();
 })();

@@ -819,7 +819,7 @@ export default function HVVault() {
             </button>
           ))}
         </nav>
-        {HAS_RESET() && (
+        {IS_WEB() && (
           <a className="nav-item" href="../harsh-reset/" style={{ textDecoration: "none", marginTop: 6 }}>
             <RotateCcw size={17} strokeWidth={1.75} />
             <span>Harsh Reset</span>

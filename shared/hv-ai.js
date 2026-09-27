@@ -134,7 +134,7 @@
   ].join("\n");
 
   /* ---------------- provider calls ---------------- */
-  const upperType = (s) => { if (!s || typeof s !== "object") return s; const o = Array.isArray(s) ? s.map(upperType) : {}; if (!Array.isArray(s)) for (const k in s) o[k] = k === "type" ? String(s[k]).toUpperCase() : upperType(s[k]); return o; };
+  const upperType = (s) => { if (!s || typeof s !== "object") return s; const o = Array.isArray(s) ? s.map(upperType) : {}; if (!Array.isArray(s)) for (const k in s) o[k] = k === "type" && typeof s[k] === "string" ? s[k].toUpperCase() : upperType(s[k]); return o; };   // only schema "type" strings; a property may itself be named "type"
   const DEFAULT_GEMINI = "gemini-3.1-flash-lite", FALLBACK_GEMINI = "gemini-3.5-flash", DEFAULT_OR = "google/gemini-3.1-flash-lite";
   async function post(url, body, headers, ms) {
     const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms || 45000);

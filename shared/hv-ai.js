@@ -135,7 +135,7 @@
     "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
-    "Day plans (HV Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' = a free block from 19:00. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
+    "Day plans (HV Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
     "Shifting the plan ('sab 7:30 PM se shuru karo', 'late ho gaya, baaki sab shift karo', 'push everything by 1 hour'): call editDayPlan with EVERY block of today_plan that is not done, in the same order, back to back from the new start (default: context.now rounded up to the next 15 minutes), keeping each block_id, title, kind and duration_min. Leave done blocks as they are. If it runs past midnight just keep counting (24:15, 24:45); the app fits it into the day.",
   ].join("\n");
 
@@ -239,7 +239,48 @@
   /* Words that say when something happens. If a message has none, an event can't have a real date:
      the model guessed it, so HV AI asks instead (never guesses). */
   const WHEN_RE = /\b(aaj|aj|today|tonight|kal|tomorrow|parso|parson|narso|day after|next|agle|agli|is|this|coming|mon(day)?|tue(s(day)?)?|wed(nesday)?|thu(rs(day)?)?|fri(day)?|sat(urday)?|sun(day)?|somvar|mangalvar|budhvar|guruvar|shukravar|shanivar|ravivar|jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|june?|july?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?|subah|dopahar|shaam|sham|raat|morning|afternoon|evening|night|noon|baje|am|pm|\d+\s*(din|days?|hafte|weeks?))\b|\d{1,2}[:.]\d{2}|\d{1,2}\s*(am|pm)|\d{1,2}[\/-]\d{1,2}|\d{4}-\d{2}-\d{2}|आज|कल|परसों|बजे|सुबह|शाम|रात/i;
-  function guard(actions, userText) {
+  /* "10 se 12 apply", "2 se 3 outreach", "4-5 pm prep": the user fixed these times, so a plan block of
+     that kind is put exactly there even if the model packed it elsewhere. */
+  const LABEL_KIND = [[/apply|application|apps?\b|job/, "apply"], [/outreach|network|message|msg|dm\b|linkedin|connect/, "outreach"], [/prep|interview|practi[cs]e|mock/, "prep"], [/lunch|dinner|khana|breakfast|nashta/, "meal"], [/free|chill|rest|break/, "free"]];
+  function userRanges(text) {
+    const t = String(text || "").toLowerCase(), out = [];
+    const re = /(subah|morning|dopahar|afternoon|shaam|sham|evening|raat|night)?\s*(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?\s*(?:se|to|till|-|–)\s*(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)?\s*(?:baje)?\s*(?:tak)?\s*([^\d,.;]{0,30})/g;
+    let m;
+    while ((m = re.exec(t))) {
+      const part = m[1] || "", tail = m[8] || "";
+      const to24 = (h, ap) => {
+        h = +h; if (h > 23) return NaN;
+        if (ap === "pm" || /shaam|sham|evening|raat|night/.test(part)) return h < 12 ? h + 12 : h;
+        if (ap === "am" || /subah|morning/.test(part)) return h === 12 ? 0 : h;
+        if (/dopahar|afternoon/.test(part)) return h < 12 && h <= 5 ? h + 12 : h;
+        return h >= 1 && h <= 7 ? h + 12 : h;                      // "2 se 3" in a day plan means the afternoon
+      };
+      const a = to24(m[2], m[4] || m[7]) * 60 + (+m[3] || 0);
+      let b = to24(m[5], m[7] || m[4]) * 60 + (+m[6] || 0);
+      if (b <= a && b + 720 > a) b += 720;                            // "subah 10 se 12": the 12 is noon
+      const lk = LABEL_KIND.find(([rx]) => rx.test(tail));
+      if (isFinite(a) && isFinite(b) && b > a && lk) out.push({ start: a, end: b, kind: lk[1] });
+    }
+    return out;
+  }
+  function anchorTimes(actions, userText) {
+    const ranges = userRanges(userText);
+    if (!ranges.length) return actions;
+    return actions.map((a) => {
+      if (!a || (a.type !== "buildDayPlan" && a.type !== "editDayPlan") || !a.args || !Array.isArray(a.args.blocks)) return a;
+      const blocks = a.args.blocks.map((b) => Object.assign({}, b));
+      ranges.forEach((r) => {
+        const same = blocks.filter((b) => b && (b.kind === r.kind || (r.kind === "meal" && /lunch|dinner/i.test(b.title || ""))));
+        if (!same.length || same.some((b) => Math.abs(toMin(b.start) - r.start) <= 20)) return;   // already where the user said
+        const b = same[0];
+        b.start = pad(Math.floor(r.start / 60)) + ":" + pad(r.start % 60);
+        if (same.length === 1) b.duration_min = Math.min(Number(b.duration_min) || (r.end - r.start), r.end - r.start);
+      });
+      return Object.assign({}, a, { args: Object.assign({}, a.args, { blocks }) });
+    });
+  }
+  function guard(actions0, userText) {
+    const actions = Array.isArray(actions0) ? anchorTimes(actions0, userText) : actions0;
     if (!Array.isArray(actions) || WHEN_RE.test(String(userText || ""))) return actions;
     let asked = actions.some((a) => a && a.type === "askClarification");
     const out = [];
@@ -850,5 +891,5 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     return { open, close, run, showActions, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
   }
 
-  root.HVAI = { version: 1, guard, pickConfig, builtInAI, hasAI, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
+  root.HVAI = { version: 1, guard, userRanges, pickConfig, builtInAI, hasAI, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };
 })(typeof window !== "undefined" ? window : globalThis);

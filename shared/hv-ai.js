@@ -126,12 +126,12 @@
     }, required: ["question"] }) },
   ];
   const SYSTEM = [
-    "You are HV AI, the assistant inside HV Vault (job-hunt CRM) and HV Reset (daily plan) for Harsh.",
+    "You are HV AI, the assistant inside HV Vault (job-hunt CRM) and HV Reset (daily plan). You help the person using the app.",
     "Reply in the language the user used (Hinglish, Hindi or English). Keep replies very short.",
     "You can only act through the provided functions. Always call at least one function. Always include one 'answer' call with a short reply, unless you call askClarification.",
-    "Your calls are proposals: the app shows them to Harsh to confirm. Never say something is done or updated ('kar diya', 'ho gaya', 'done', 'updated' are wrong); say what will happen after he confirms, e.g. 'Ye raha naya plan, confirm karo.'",
+    "Your calls are proposals: the app shows them to the user to confirm. Never say something is done or updated ('kar diya', 'ho gaya', 'done', 'updated' are wrong); say what will happen after they confirm, e.g. 'Ye raha naya plan, confirm karo.'",
     "Use ids from the context when a job/follow-up clearly matches. If a company or role matches more than one job and the user did not say which, call askClarification listing them. If nothing matches, say so in 'answer' and do not invent ids.",
-    "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. In function arguments output dates as YYYY-MM-DD and times as HH:MM (24-hour). In any text Harsh reads (answer, askClarification) always write times in 12-hour format with AM/PM, e.g. 5:25 PM, never 17:25.",
+    "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. In function arguments output dates as YYYY-MM-DD and times as HH:MM (24-hour). In any text the user reads (answer, askClarification) always write times in 12-hour format with AM/PM, e.g. 5:25 PM, never 17:25.",
     "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
@@ -192,7 +192,7 @@
   };
   async function geminiActions(cfg, userText, context, history, model, scope) {
     const contents = (history || []).slice(-8).map((h) => ({ role: h.role === "user" ? "user" : "model", parts: [{ text: h.text }] }));
-    contents.push({ role: "user", parts: [{ text: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nHARSH SAYS:\n" + userText }] });
+    contents.push({ role: "user", parts: [{ text: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nUSER SAYS:\n" + userText }] });
     const r = await callGemini(cfg, model, {
       systemInstruction: { parts: [{ text: scope.system }] }, contents,
       tools: [{ functionDeclarations: scope.tools.map((t) => ({ name: t.name, description: t.description, parameters: upperType(t.parameters) })) }],
@@ -222,7 +222,7 @@
   }
   async function openrouterActions(cfg, userText, context, history, model, scope) {
     const messages = [{ role: "system", content: scope.system }].concat((history || []).slice(-8).map((h) => ({ role: h.role === "user" ? "user" : "assistant", content: h.text })));
-    messages.push({ role: "user", content: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nHARSH SAYS:\n" + userText });
+    messages.push({ role: "user", content: "CONTEXT (JSON):\n" + JSON.stringify(context) + "\n\nUSER SAYS:\n" + userText });
     const r = await post("https://openrouter.ai/api/v1/chat/completions", {
       model, messages, temperature: 0.1, tool_choice: "required",
       tools: scope.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
@@ -711,7 +711,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const c = CL(); if (!c) return;
       const u = c.user ? c.user.uid : null;
       if (u === histUid) return;
-      if (histUid && !u) { try { localStorage.removeItem(hkey()); } catch (e) {} }   // signed out: this browser forgets the chat
+      if (histUid && !u) { try { localStorage.removeItem(hkey()); localStorage.removeItem("hvai-name@" + histUid); } catch (e) {} toldName = ""; }   // signed out: this browser forgets the chat
+      if (!histUid && u && toldName) { try { localStorage.setItem("hvai-name@" + u, toldName); } catch (e) {} }   // a guest who told their name keeps it after sign-in
       if (!histUid && u && history.length) carry = history.slice();
       histUid = u; loadLocal(); rerender();
       if (u) pullHist();
@@ -743,7 +744,23 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     const scroll = () => { log.scrollTop = log.scrollHeight; };
     const add = (cls, html) => { const el = document.createElement("div"); el.className = cls; el.innerHTML = html; log.appendChild(el); scroll(); return el; };
     const say = (who, text0, keep) => { const text = who === "user" ? text0 : to12(text0); add("hvai-msg " + (who === "user" ? "me" : who === "sys" ? "sys" : "ai"), esc(text)); if (keep !== false && who !== "sys") { history.push({ role: who === "user" ? "user" : "ai", text }); save(); } };
-    const firstName = () => { const n = String((host.userName && host.userName()) || "Harsh").trim().split(/\s+/)[0] || "Harsh"; return n.charAt(0).toUpperCase() + n.slice(1).toLowerCase(); };
+    /* The person's first name: from their profile, else the name they told HV AI, else their Google
+       account. A new person is asked once ("Aapka naam kya hai?"); the answer is kept for this account
+       (a guest: this tab only) and used in every greeting after that. */
+    let toldName = "", askingName = false;
+    const nameKey = () => "hvai-name" + (CL() && CL().user ? "@" + CL().user.uid : "");
+    const storedName = () => { if (toldName) return toldName; if (CL() && !CL().user) return ""; try { return localStorage.getItem(nameKey()) || ""; } catch (e) { return ""; } };
+    const firstName = () => { const cu = CL() && CL().user; const n = String((host.userName && host.userName()) || storedName() || (cu && cu.name) || "").trim().split(/\s+/)[0] || ""; return n ? n.charAt(0).toUpperCase() + n.slice(1).toLowerCase() : ""; };
+    const hello = () => { const h = new Date().getHours(); return h < 5 ? "Hello" : h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; };
+    // "Priya", "mera naam Priya hai", "I'm Priya", "my name is Priya" -> "Priya"; a request or a long sentence -> ""
+    function nameFrom(t) {
+      let x = String(t).trim().replace(/[.!,]+$/g, "");
+      x = x.replace(/^(hi|hello|hey|namaste)[, ]+/i, "").replace(/^(mera|meraa|my)\s+(naam|name)\s+(is\s+|hai\s+)?/i, "").replace(/^(i am|i'm|im|main|mai|me)\s+/i, "").replace(/\s+(hai|hoon|hu|hun|here)$/i, "").trim();
+      const w = x.split(/\s+/);
+      if (!x || w.length > 3 || /\d|[?@/:]/.test(x)) return "";
+      if (/^(kal|aaj|plan|add|job|meeting|interview|task|mujhe|please|kya|kaise|help|yes|no|haan|nahi|ok)$/i.test(w[0])) return "";
+      return w[0].length >= 2 && w[0].length <= 20 ? w[0] : "";
+    }
     const cfg = () => (host.getSettings && host.getSettings()) || {};
     const theme = () => panel.classList.toggle("dark", !!(host.isDark && host.isDark()));
     function open() {
@@ -752,7 +769,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         history.slice(-20).forEach((h) => add("hvai-msg " + (h.role === "user" ? "me" : "ai"), esc(h.text)));
         const c = cfg();
         if (!hasAI(c)) say("ai", host.keyHelp || "HV AI needs an AI key. Open HV Vault > Settings > HV AI, paste your Gemini key (free from aistudio.google.com) and save. Then come back here.", false);
-        else say("ai", "Bolo " + firstName() + ", kya karna hai?", false);
+        else if (firstName()) say("ai", hello() + ", " + firstName() + "! Bolo, kya karna hai?", false);
+        else { askingName = true; say("ai", hello() + "! Main HV AI hoon. Aapka naam kya hai?", false); }
       }
       setTimeout(() => input.focus(), 50);
     }
@@ -866,6 +884,15 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       input.value = ""; grow();
       const c = cfg();
       say("user", text);
+      if (askingName) {                                              // the first answer after "Aapka naam kya hai?"
+        askingName = false; const nm = nameFrom(text);
+        if (nm) {
+          toldName = nm.charAt(0).toUpperCase() + nm.slice(1).toLowerCase();
+          if (!(CL() && !CL().user)) { try { localStorage.setItem(nameKey(), toldName); } catch (e) {} }
+          say("ai", "Nice to meet you, " + toldName + "! Bolo, kya karna hai? Jaise: \u201c" + (host.app === "reset" ? "Kal 10 se 6 padhai, 1 baje lunch" : "Kal 4 baje Zomato ka interview hai") + "\u201d", false);
+          return;
+        }
+      }
       if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       busy = true; send.disabled = true; const typing = add("hvai-typing", "HV AI is thinking…");
       let r;

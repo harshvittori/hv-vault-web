@@ -691,7 +691,7 @@ export default function HVVault() {
       getData: () => dataRef.current,
       getSettings: () => window.HVAI.pickConfig(dataRef.current.settings),   // the built-in AI on the website; a key only on desktop
       getContext: () => window.HVAI.buildContext(dataRef.current, null),
-      userName: () => dataRef.current.settings.myName || "Harsh",
+      userName: () => dataRef.current.settings.myName || "",
       isDark: () => dataRef.current.settings.theme === "dark",
       execute: async (actions) => {
         const out = await commit((d) => applyAIActions(d, actions, todayISO()));

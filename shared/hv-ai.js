@@ -129,13 +129,14 @@
     "You are HV AI, the assistant inside HV Vault (job-hunt CRM) and HV Reset (daily plan). You help the person using the app.",
     "Reply in the language the user used (Hinglish, Hindi or English). Keep replies very short.",
     "You can only act through the provided functions. Always call at least one function. Always include one 'answer' call with a short reply, unless you call askClarification.",
+    "History lines starting with [CANCELLED by the user: ...] mean the user rejected that proposal. Never repeat its blocks, times or details. Build every new proposal only from the user's latest message plus the current data in context (for day plans: context.today_plan, the confirmed plan).",
     "Your calls are proposals: the app shows them to the user to confirm. Never say something is done or updated ('kar diya', 'ho gaya', 'done', 'updated' are wrong); say what will happen after they confirm, e.g. 'Ye raha naya plan, confirm karo.'",
     "Use ids from the context when a job/follow-up clearly matches. If a company or role matches more than one job and the user did not say which, call askClarification listing them. If nothing matches, say so in 'answer' and do not invent ids.",
     "Dates: use context.now (India time) and context.date_hints for kal, parso, weekdays and 'next <day>'. '4 baje' means 16:00 unless morning is said; '10 baje' means 10:00. In function arguments output dates as YYYY-MM-DD and times as HH:MM (24-hour). In any text the user reads (answer, askClarification) always write times in 12-hour format with AM/PM, e.g. 5:25 PM, never 17:25.",
     "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
-    "Day plans (HV Reset): one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
+    "Day plans (HV Reset): plan only what the user asked for. If they name one or two tasks ('kal 8 baje study'), the plan has just those blocks: do not add breaks, meals or other tasks they did not ask for. Use the length they give; if none, 60 minutes. For a whole day ('poora din plan karo', a list of several tasks), follow these rules too: one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
     "Shifting the plan ('sab 7:30 PM se shuru karo', 'late ho gaya, baaki sab shift karo', 'push everything by 1 hour'): call editDayPlan with EVERY block of today_plan that is not done, in the same order, back to back from the new start (default: context.now rounded up to the next 15 minutes), keeping each block_id, title, kind and duration_min. Leave done blocks as they are. If it runs past midnight just keep counting (24:15, 24:45); the app fits it into the day.",
   ].join("\n");
 
@@ -825,7 +826,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       el.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", () => act(item, batch, b.dataset.a)));
     }
     async function act(item, batch, a) {
-      if (a === "cancel") { item.state = "cancelled"; paint(item, batch); return footer(batch); }
+      if (a === "cancel") { item.state = "cancelled"; paint(item, batch); noteCancelled([item]); return footer(batch); }
       if (a === "edit") { item.state = "edit"; return paint(item, batch); }
       if (a === "canceledit") { item.state = "pending"; return paint(item, batch); }
       if (a === "saveedit") {
@@ -847,8 +848,13 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (pending.length > 1) {
         batch.footer = add("hvai-row", '<button class="b p" data-a="all">Confirm all ' + pending.length + '</button><button class="b" data-a="none">Cancel all</button>');
         batch.footer.querySelector('[data-a="all"]').addEventListener("click", () => execute(batch, pending));
-        batch.footer.querySelector('[data-a="none"]').addEventListener("click", () => { pending.forEach((i) => { i.state = "cancelled"; paint(i, batch); }); footer(batch); });
+        batch.footer.querySelector('[data-a="none"]').addEventListener("click", () => { pending.forEach((i) => { i.state = "cancelled"; paint(i, batch); }); noteCancelled(pending); footer(batch); });
       }
+    }
+    // the user said no: the next request must not reuse this proposal
+    function noteCancelled(items) {
+      const names = items.map((i) => { try { return describe(i.res.action, host.getData && host.getData()).title; } catch (e) { return i.res.action.type; } });
+      history.push({ role: "ai", text: "[CANCELLED by the user: " + names.join(", ") + ". This proposal is void. Do not reuse any of its blocks, times or details.]" }); save();
     }
     async function execute(batch, items) {
       if (busy) return; busy = true;
@@ -904,7 +910,9 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const acts = all.filter((a) => a && scope.allowed.indexOf(a.type) >= 0);     // this app's HV AI only changes this app
       const away = all.filter((a) => a && acts.indexOf(a) < 0).map((a) => otherApp(host.app, a.type)).filter(Boolean);
       if (away.length) say("ai", "Ye " + away[0] + " ka kaam hai. " + away[0] + " kholo aur wahan HV AI se bolo. Yahan kuch change nahi kiya.", false);
-      if (!away.length) acts.filter((a) => a.type === "answer" && a.args && str(a.args.text)).forEach((a) => say("ai", a.args.text));   // its reply would describe the other-app change
+      const proposes = acts.some((a) => a.type !== "answer" && a.type !== "askClarification");
+      const tidyReply = (t) => proposes && /(kar diy|ho gay|set kar|add kar diy|bana diy|update kar diy|\bdone\b|\bupdated\b|\badded\b)/i.test(t) ? (host.app === "reset" ? "Ye raha plan. Theek lage to Confirm karo." : "Ye raha change. Theek lage to Confirm karo.") : t;
+      if (!away.length) acts.filter((a) => a.type === "answer" && a.args && str(a.args.text)).forEach((a) => say("ai", tidyReply(a.args.text)));   // its reply would describe the other-app change
       acts.filter((a) => a.type === "askClarification" && a.args && str(a.args.question)).forEach((a) => {
         say("ai", a.args.question);
         const opts = Array.isArray(a.args.options) ? a.args.options.filter(str).slice(0, 5) : [];

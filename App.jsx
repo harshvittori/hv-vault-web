@@ -862,7 +862,7 @@ export default function HVVault() {
           ))}
         </nav>
         {IS_WEB() && (
-          <a className="nav-item" href="../harsh-reset/" style={{ textDecoration: "none", marginTop: 6 }}>
+          <a className="nav-item" href="../hv-reset/" style={{ textDecoration: "none", marginTop: 6 }}>
             <RotateCcw size={17} strokeWidth={1.75} />
             <span>HV Reset</span>
           </a>
@@ -2297,7 +2297,7 @@ function JobsPage({ data, setModal, remove, openDetail, companyName }) {
   );
 }
 
-/* HV Reset link. Reset lives on the same site (harshvittori.github.io/harsh-reset),
+/* HV Reset link. Reset lives on the same site (harshvittori.github.io/hv-reset),
    so when it has been used in this browser its data is visible here. The apply rule
    below mirrors Reset's "2-minute apply rule" and only appears when Reset is present. */
 const HAS_RESET = () => { try { return IS_WEB() && (localStorage.getItem("harsh-reset-v1") !== null || localStorage.getItem("hv-reset-linked") === "1"); } catch (e) { return false; } };

@@ -137,6 +137,7 @@
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
     "Think before you act. If something is unclear or looks like a mistake (the same task twice, a time that could be AM or PM, a date that doesn't fit, a missing time for a timed task), ask ONE short question with answer instead of guessing. Never invent a date: use context.now for today, tomorrow and weekdays.",
+    "If context.pending_question is present, you asked the user that question about the plan in context.pending_question.plan, and their message is most likely the answer: return that whole plan again (same date) with their answer applied, as buildDayPlan (or editDayPlan when changing today's plan).",
     "Day plans (HV Reset): plan only what the user asked for. If they name one or two tasks ('kal 8 baje study'), the plan has just those blocks: do not add breaks, meals or other tasks they did not ask for. Use the length they give; if none, 60 minutes. For a whole day ('poora din plan karo', a list of several tasks), follow these rules too: one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
     "Shifting the plan ('sab 7:30 PM se shuru karo', 'late ho gaya, baaki sab shift karo', 'push everything by 1 hour'): call editDayPlan with EVERY block of today_plan that is not done, in the same order, back to back from the new start (default: context.now rounded up to the next 15 minutes), keeping each block_id, title, kind and duration_min. Leave done blocks as they are. If it runs past midnight just keep counting (24:15, 24:45); the app fits it into the day.",
   ].join("\n");
@@ -820,7 +821,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     /* ---- cards ---- */
     function cardFor(res, batch) {
       const el = document.createElement("div"); el.className = "hvai-card"; log.appendChild(el);
-      const item = { res, el, state: "pending" }; batch.items.push(item);
+      const item = { res, el, state: "pending", batch }; batch.items.push(item);
       paint(item, batch); scroll(); return item;
     }
     /* the day-plan editor: one small card per task, all taps (no dropdowns or time pickers) */
@@ -856,7 +857,9 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const r = item.res, el = item.el, data = host.getData ? host.getData() : null;
       el.className = "hvai-card";
       if (r.status === "choose") {
-        el.innerHTML = '<div class="hvai-ct">' + (r.next ? "Quick question" : "Which one?") + '</div><div class="hvai-cx">' + esc(r.message) + '</div>' + r.options.map((o) => '<button class="b hvai-opt" data-id="' + esc(o.id) + '">' + esc(o.label) + '</button>').join("") + '<div class="hvai-row"><button class="b" data-a="cancel">Cancel</button></div>';
+        if (r.next) openQ = item;
+        const hint = r.ask === "meals" ? "Or type your own time, like \u201clunch 2 baje\u201d." : r.ask === "dup" ? "Or just type \u201cek hi hai\u201d or \u201calag alag\u201d." : "";
+        el.innerHTML = '<div class="hvai-ct">' + (r.next ? "Quick question" : "Which one?") + '</div><div class="hvai-cx">' + esc(r.message) + '</div>' + (hint ? '<div class="hvai-cs">' + hint + '</div>' : '') + r.options.map((o) => '<button class="b hvai-opt" data-id="' + esc(o.id) + '">' + esc(o.label) + '</button>').join("") + '<div class="hvai-row"><button class="b" data-a="cancel">Cancel</button></div>';
         el.querySelectorAll(".hvai-opt").forEach((b) => b.addEventListener("click", () => { if (r.next) { const n = r.next(b.dataset.id); item.res = prepare(n.action, host, n.meta); } else item.res = choose(r, b.dataset.id); paint(item, batch); }));
       } else if (r.status === "handoff") {
         const d = describe(r.action, data);
@@ -958,7 +961,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         const dp = meta.dupsOk ? null : dupPair(action.args.blocks);
         if (dp) {
           const a = dp[0], c = dp[1], name = a.b.title;
-          return { status: "choose", action, message: "\u201c" + name + "\u201d is at " + niceTime(hhmm(a.s)) + " and again at " + niceTime(hhmm(c.s)) + ". Is it one task, or two separate sessions?",
+          return { status: "choose", ask: "dup", action, meta, message: "\u201c" + name + "\u201d is at " + niceTime(hhmm(a.s)) + " and again at " + niceTime(hhmm(c.s)) + ". Is it one task, or two separate sessions?",
             options: [{ id: "one", label: "One task, " + niceTime(hhmm(a.s)) + " to " + niceTime(hhmm(c.e)) + " (" + durText(c.e - a.s) + ")" }, { id: "two", label: "Two separate sessions" }],
             next: (id) => { const args = Object.assign({}, action.args);
               if (id === "one") args.blocks = action.args.blocks.filter((b, i) => i !== c.i).map((b) => b === a.b ? Object.assign({}, b, { duration_min: c.e - a.s }) : b);
@@ -969,7 +972,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         const f = fixPlan(action.args.blocks, curL, { meals: meta.meals !== "no" });
         if (!meta.meals && f.addedMeals.length) {
           const one = f.addedMeals.length === 1, what = one ? f.addedMeals[0].split(" ")[0].toLowerCase() : "lunch and dinner";
-          return { status: "choose", action, message: "Your plan runs through " + what + " time. Add " + f.addedMeals.join(" and ") + "?",
+          return { status: "choose", ask: "meals", askMeals: f.addedMeals.map((x) => x.split(" ")[0]), action, meta, message: "Your plan runs through " + what + " time. Add " + f.addedMeals.join(" and ") + "?",
             options: [{ id: "yes", label: "Yes, add " + (one ? what : "both") }, { id: "no", label: "No, skip meals" }],
             next: (id) => ({ action, meta: Object.assign({}, meta, { meals: id }) }) };
         }
@@ -980,6 +983,48 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       }
       return resolve(action, data, { today: istNow().date });
     }
+    /* A question card can also be answered by typing: "lunch 2 baje", "dinner 9:30", "ek hi task hai",
+       "alag alag", "no meals". What isn't understood here goes to the AI along with the pending plan. */
+    let openQ = null;
+    const pendingQ = () => (openQ && openQ.state === "pending" && openQ.res.status === "choose" && openQ.res.next && openQ.el.isConnected ? openQ : null);
+    function mealTimes(text, asked) {
+      const out = {}, segs = String(text).toLowerCase().split(/\s*(?:,|;|\baur\b|\band\b|\bthen\b)\s*/);
+      segs.forEach((seg) => {
+        const m = /(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?/.exec(seg); if (!m) return;
+        let name = /lunch|dopahar|afternoon/.test(seg) ? "Lunch" : /dinner|raat|night|shaam/.test(seg) ? "Dinner" : (asked.length === 1 ? asked[0] : null);
+        let h = +m[1]; const mi = m[2] ? +m[2] : 0, ap = (m[3] || "").replace(/\./g, "");
+        if (!name) name = (ap === "pm" && h >= 6 && h < 12) || (!ap && h >= 7 && h <= 11 && /raat|night/.test(seg)) ? "Dinner" : "Lunch";
+        if (ap === "pm" && h < 12) h += 12; else if (ap === "am" && h === 12) h = 0;
+        else if (!ap) { if (name === "Lunch" && h >= 1 && h <= 6) h += 12; if (name === "Dinner" && h < 12) h += 12; }
+        if (h > 23 || mi > 59) return;
+        out[name] = String(h).padStart(2, "0") + ":" + String(mi).padStart(2, "0");
+      });
+      return out;
+    }
+    function answerTyped(q, text) {
+      const r = q.res, t = text.toLowerCase();
+      let pick = null, action = null, meta = r.meta || {};
+      if (r.ask === "dup") {
+        if (/\b(ek|one|single|same|ek hi|1 task|ek task|combine|merge|milake)\b/.test(t) && !/\b(two|alag|separate|different|do alag)\b/.test(t)) pick = "one";
+        else if (/\b(two|alag|separate|different|do|2)\b/.test(t)) pick = "two";
+      } else if (r.ask === "meals") {
+        const times = mealTimes(text, r.askMeals || []);
+        if (Object.keys(times).length) {
+          const args = Object.assign({}, r.action.args);
+          args.blocks = (args.blocks || []).filter((b) => !(b.kind === "meal" && times[b.title])).concat(Object.keys(times).map((n) => ({ start: times[n], duration_min: 30, title: n, kind: "meal", core: false })))
+            .sort((x, y) => toMin(x.start) - toMin(y.start));                 // in time order, or a later block reads as the next day
+          action = { type: r.action.type, args };
+          const rest = (r.askMeals || []).filter((n) => !times[n]);
+          meta = Object.assign({}, meta, rest.length ? {} : { meals: "yes" });   // a meal they didn't mention is still asked about
+          if (rest.length) delete meta.meals;
+        } else if (/\b(no|nahi|nahin|mat|skip|nope)\b/.test(t)) pick = "no";
+        else if (/\b(yes|haan|han|ha|ok|okay|sure|theek|thik|add)\b/.test(t)) pick = "yes";
+      }
+      if (pick) { const n = r.next(pick); q.res = prepare(n.action, host, n.meta); }
+      else if (action) q.res = prepare(action, host, meta);
+      else return false;
+      paint(q, q.batch || { items: [q] }); if (q.batch) footer(q.batch); return true;
+    }
     async function run(textIn) {
       const text = (textIn != null ? textIn : input.value).trim();
       if (!text || busy) return;
@@ -987,6 +1032,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const c = cfg();
       { const sg = log.querySelector(".hvai-sugg"); if (sg) sg.remove(); }
       say("user", text);
+      const pq = pendingQ();
+      if (pq && answerTyped(pq, text)) return;                        // typed answer to the question card
       if (askingName) {                                              // the first answer after "Aapka naam kya hai?"
         askingName = false; const nm = nameFrom(text);
         if (nm) {
@@ -1002,6 +1049,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const cw = Object.assign({}, c, { onWait: () => { typing.textContent = "Lots of people are using HV AI right now. One moment…"; } });
       let ctx = host.getContext ? host.getContext() : null;
       if (!ctx || typeof ctx !== "object") ctx = buildContext(host.getData ? host.getData() : null, host.getPlan ? host.getPlan() : null);   // never send the AI a context without today's date and time
+      if (pq) ctx = Object.assign({}, ctx, { pending_question: { question: pq.res.message, plan: { date: pq.res.action.args.date, blocks: pq.res.action.args.blocks } } });
       try { r = await interpret(cw, text, ctx, history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
       if (r.error) { say("sys", r.error === "NO_KEY" ? "Add your AI key in HV Vault > Settings > HV AI." : r.error, false); return; }
       const batch = { items: [] };
@@ -1017,6 +1065,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         const opts = Array.isArray(a.args.options) ? a.args.options.filter(str).slice(0, 5) : [];
         if (opts.length) { const row = add("hvai-row", opts.map((o) => '<button class="b">' + esc(o) + "</button>").join("")); row.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { row.remove(); run(b.textContent); })); }
       });
+      if (pq && acts.some((a) => a.type === "buildDayPlan" || a.type === "editDayPlan")) { pq.state = "cancelled"; paint(pq, pq.batch || { items: [pq] }); }   // the new plan replaces the one that was waiting
       acts.filter((a) => a.type !== "answer" && a.type !== "askClarification").forEach((a) => cardFor(prepare(a, host), batch));
       if (!acts.length && !away.length) say("ai", "Samjha nahi. Thoda aur batao?", false);
       footer(batch);

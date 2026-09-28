@@ -484,7 +484,7 @@
     const notes = [];
     let blocks = [];
     (blocksIn || []).forEach((b) => {
-      const base = { block_id: b.block_id, start: toMin(b.start), duration_min: Math.round(Number(b.duration_min)), title: String(b.title).trim(), kind: b.kind, core: b.core === true || ["apply", "prep", "outreach"].indexOf(b.kind) >= 0 };
+      const base = { block_id: b.block_id, start: toMin(b.start), duration_min: Math.round(Number(b.duration_min)), title: String(b.title).trim(), kind: b.kind, core: typeof b.core === "boolean" ? b.core : ["apply", "prep", "outreach"].indexOf(b.kind) >= 0 };   // an explicit choice wins
       const parts = base.kind === "free" || base.kind === "meal" || base.kind === "rest" ? [base.title] : base.title.split(JOIN).map((x) => x.trim()).filter(Boolean);
       if (parts.length > 1) {
         const each = Math.max(10, Math.round(base.duration_min / parts.length));
@@ -646,6 +646,20 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
 .hvai button.b.p,.hvai a.b.p{background:var(--hvai-grad);border-color:transparent;color:#fff;box-shadow:0 8px 18px -10px rgba(64,88,200,.9)}
 .hvai button.b.d{background:var(--hvai-danger);border-color:transparent;color:#fff}
 .hvai-opt{display:block;width:100%;text-align:left;margin-top:6px}
+.hvai-blocks{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+.hvai-blk{border:1px solid var(--hvai-line);border-left:4px solid var(--hvai-accent);border-radius:14px;padding:8px 10px;background:var(--hvai-field)}
+.hvai-blk.k-rest{border-left-color:#1baf7a}.hvai-blk.k-meal{border-left-color:#eb6834}.hvai-blk.k-free{border-left-color:#9a9aa3}
+.hvai-bt{display:flex;align-items:center;gap:6px}
+.hvai-edit .hvai-bt input{flex:1;min-width:0;border:0;background:transparent;padding:4px 2px;font-weight:700;font-size:15.5px;border-radius:8px}
+.hvai-edit .hvai-bt input:focus{outline:2px solid var(--hvai-accent)}
+.hvai-star,.hvai-bx{flex:none;width:30px;height:30px;border-radius:50%;border:0;background:transparent;color:var(--hvai-muted);font-size:18px;line-height:1;cursor:pointer}
+.hvai-star.on{color:#E0A83E}.hvai-bx:hover,.hvai-star:hover{background:var(--hvai-card)}
+.hvai-bm{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px}
+.hvai-stp{display:inline-flex;align-items:center;border:1px solid var(--hvai-line);border-radius:999px;overflow:hidden}
+.hvai-stp button{border:0;background:transparent;color:var(--hvai-ink);width:28px;height:28px;font-size:17px;cursor:pointer}.hvai-stp button:hover{background:var(--hvai-card)}
+.hvai-stp b{font-size:13px;min-width:58px;text-align:center;font-variant-numeric:tabular-nums}
+.hvai-kind{border:1px solid var(--hvai-line);background:var(--hvai-card);color:var(--hvai-ink);border-radius:999px;padding:4px 11px;font:inherit;font-size:13px;font-weight:700;cursor:pointer}
+.hvai button.hvai-addb{margin-top:8px;border-style:dashed;width:100%}
 .hvai-edit label{display:block;font-size:12.5px;color:var(--hvai-muted);margin:8px 0 3px}
 .hvai-edit input,.hvai-edit select,.hvai-edit textarea{width:100%;box-sizing:border-box;font:inherit;font-size:16px;padding:9px 11px;border-radius:12px;border:1px solid var(--hvai-line);background:var(--hvai-field);color:var(--hvai-ink);color-scheme:light dark}
 .hvai-bar{padding:10px 12px max(10px,env(safe-area-inset-bottom));border-top:1px solid var(--hvai-line)}
@@ -803,6 +817,35 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const item = { res, el, state: "pending" }; batch.items.push(item);
       paint(item, batch); scroll(); return item;
     }
+    /* the day-plan editor: one small card per task, all taps (no dropdowns or time pickers) */
+    const KLAB = { apply: "Work", prep: "Work", outreach: "Work", work: "Work", close: "Work", meal: "Meal", rest: "Break", free: "Free time" };
+    const KNEXT = { work: "rest", apply: "rest", prep: "rest", outreach: "rest", close: "rest", rest: "meal", meal: "free", free: "work" };
+    const hm2m = (t) => { const m = /^(\d{1,2}):(\d{2})/.exec(String(t || "")); return m ? (+m[1]) * 60 + (+m[2]) : 540; };
+    const m2hm = (m) => { m = ((Math.round(m) % 1440) + 1440) % 1440; return String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0"); };
+    const durT = (d) => d < 60 ? d + " min" : Math.floor(d / 60) + "h" + (d % 60 ? " " + (d % 60) + "m" : "");
+    function blocksHTML(list) {
+      if (!list.length) return '<p class="hvai-cs">No tasks yet. Add one below.</p>';
+      return list.map((b, i) => '<div class="hvai-blk k-' + esc(KLAB[b.kind] ? b.kind : "work") + '">' +
+        '<div class="hvai-bt"><input data-bt="' + i + '" value="' + esc(b.title) + '" placeholder="Task name" aria-label="Task name">' +
+        '<button type="button" class="hvai-star' + (b.core ? " on" : "") + '" data-bl="core" data-i="' + i + '" aria-pressed="' + b.core + '" title="Must do">' + (b.core ? "\u2605" : "\u2606") + '</button>' +
+        '<button type="button" class="hvai-bx" data-bl="del" data-i="' + i + '" aria-label="Remove task">\u00d7</button></div>' +
+        '<div class="hvai-bm"><span class="hvai-stp"><button type="button" data-bl="t-" data-i="' + i + '" aria-label="15 minutes earlier">\u2039</button><b>' + esc(to12(m2hm(hm2m(b.start)))) + '</b><button type="button" data-bl="t+" data-i="' + i + '" aria-label="15 minutes later">\u203a</button></span>' +
+        '<span class="hvai-stp"><button type="button" data-bl="d-" data-i="' + i + '" aria-label="5 minutes shorter">\u2039</button><b>' + esc(durT(b.duration_min)) + '</b><button type="button" data-bl="d+" data-i="' + i + '" aria-label="5 minutes longer">\u203a</button></span>' +
+        '<button type="button" class="hvai-kind" data-bl="kind" data-i="' + i + '">' + esc(KLAB[b.kind] || "Work") + '</button></div></div>').join("");
+    }
+    function blockAct(item, batch, btn) {
+      const L = item.draft, i = +btn.dataset.i, b = L[i], op = btn.dataset.bl;
+      if (op === "add") { const last = L[L.length - 1]; L.push({ start: last ? m2hm(hm2m(last.start) + last.duration_min) : "09:00", duration_min: 30, title: "", kind: "work", core: false }); }
+      else if (op === "del") L.splice(i, 1);
+      else if (op === "core") b.core = !b.core;
+      else if (op === "kind") b.kind = KNEXT[b.kind] || "work";
+      else if (op === "t-" || op === "t+") b.start = m2hm(hm2m(b.start) + (op === "t+" ? 15 : -15));
+      else if (op === "d-" || op === "d+") b.duration_min = Math.max(5, Math.min(600, b.duration_min + (op === "d+" ? 5 : -5)));
+      const box = item.el.querySelector(".hvai-blocks"); box.innerHTML = blocksHTML(L);
+      box.querySelectorAll("[data-bl]").forEach((x) => x.addEventListener("click", () => blockAct(item, batch, x)));
+      box.querySelectorAll("[data-bt]").forEach((f) => f.addEventListener("input", () => { L[+f.dataset.bt].title = f.value; }));
+      if (op === "add") { const f = box.querySelector('[data-bt="' + (L.length - 1) + '"]'); if (f) f.focus(); }
+    }
     function paint(item, batch) {
       const r = item.res, el = item.el, data = host.getData ? host.getData() : null;
       el.className = "hvai-card";
@@ -819,13 +862,17 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         el.innerHTML = '<div class="hvai-ct">Can\'t do this one</div><div class="hvai-cs">' + esc(r.message) + '</div>'; item.state = "skipped";
       } else if (item.state === "edit") {
         const a = r.action.args, fields = EDIT_FIELDS[r.action.type] || [];
+        if (fields.indexOf("blocks") >= 0 && !item.draft) item.draft = (a.blocks || []).map((b) => ({ start: b.start, duration_min: Number(b.duration_min) || 30, title: b.title || "", kind: b.kind || "work", core: !!b.core }));
         el.innerHTML = '<div class="hvai-ct">Edit</div><div class="hvai-edit">' + fields.map((k) => {
+          if (k === "blocks") return '<div class="hvai-blocks">' + blocksHTML(item.draft) + '</div><button type="button" class="b hvai-addb" data-bl="add">+ Add task</button>';
           const v = k === "blocks" ? (a.blocks || []).map((b) => [b.start, b.duration_min, b.title, b.kind, b.core ? "core" : ""].join(" | ")).join("\n") : (a[k] == null ? "" : a[k]);
           const en = k === "type" ? (r.action.type === "addEvent" ? EVENT_TYPES : FU_TYPES) : ENUMS[k];
           const inp = k === "blocks" ? '<textarea rows="7" data-k="blocks">' + esc(v) + "</textarea>" : en ? '<select data-k="' + k + '"><option value=""></option>' + en.map((o) => "<option" + (o === v ? " selected" : "") + ">" + esc(o) + "</option>").join("") + "</select>" :
             '<input data-k="' + k + '" value="' + esc(v) + '"' + (/date|deadline/.test(k) ? ' type="date"' : k === "time" ? ' type="time"' : "") + ">";
           return "<label>" + esc(k === "blocks" ? "Blocks: start | minutes | title | kind | core" : k.replace("_", " ")) + "</label>" + inp;
         }).join("") + '</div><div class="hvai-row"><button class="b p" data-a="saveedit">Save</button><button class="b" data-a="canceledit">Back</button></div>';
+        el.querySelectorAll("[data-bl]").forEach((b) => b.addEventListener("click", () => blockAct(item, batch, b)));
+        el.querySelectorAll("[data-bt]").forEach((f) => f.addEventListener("input", () => { item.draft[+f.dataset.bt].title = f.value; }));
       } else if (item.state === "done" || item.state === "cancelled") {
         const d = describe(r.action, data);
         el.className = "hvai-card done"; el.innerHTML = '<div class="hvai-ct">' + (item.state === "done" ? "Done · " : "Cancelled · ") + esc(d.title) + '</div><div class="hvai-cx">' + esc(d.text) + "</div>";
@@ -841,15 +888,18 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     async function act(item, batch, a) {
       if (a === "cancel") { item.state = "cancelled"; paint(item, batch); noteCancelled([item]); return footer(batch); }
       if (a === "edit") { item.state = "edit"; return paint(item, batch); }
-      if (a === "canceledit") { item.state = "pending"; return paint(item, batch); }
+      if (a === "canceledit") { item.state = "pending"; item.draft = null; return paint(item, batch); }
       if (a === "saveedit") {
         const args = Object.assign({}, item.res.action.args);
         item.el.querySelectorAll("[data-k]").forEach((f) => {
           const k = f.dataset.k, v = f.value.trim();
+          if (k === "blocks" && f.tagName !== "TEXTAREA") return;
           if (k === "blocks") args.blocks = v.split("\n").map((l) => l.split("|").map((x) => x.trim())).filter((p) => p.length >= 3).map((p) => ({ start: p[0], duration_min: Number(p[1]), title: p[2], kind: BLOCK_KINDS.indexOf(p[3]) >= 0 ? p[3] : "work", core: /core/i.test(p[4] || "") }));
           else if (k === "duration_min") { if (v) args[k] = Number(v); else delete args[k]; }
           else if (v) args[k] = v; else delete args[k];
         });
+        delete args.notes;                                                // added by prepare() for display; not part of the action
+        if (item.draft) { args.blocks = item.draft.filter((b) => b.title.trim()).map((b) => ({ start: m2hm(hm2m(b.start)), duration_min: b.duration_min, title: b.title.trim(), kind: b.kind, core: !!b.core })).sort((x, y) => hm2m(x.start) - hm2m(y.start)); item.draft = null; }
         const next = prepare({ type: item.res.action.type, args }, host);
         item.res = next; item.state = "pending"; paint(item, batch); return;
       }

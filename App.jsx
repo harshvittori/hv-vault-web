@@ -5983,14 +5983,20 @@ h1,h2,h3,.brand-name,.stat-value,.ac-title,.card-title{font-family:'Sora','Inter
 }
 @media (hover:none),(max-width:900px){ .ps{-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)} .ps-opt:hover,.ps-drop:hover{transform:none} }
 
-/* Phones and touch screens: blur is re-rendered every scroll frame, so repeated tiles use
-   more opaque glass without blur, the sky stops drifting, and the sky is sized to the large
-   viewport so the collapsing address bar doesn't make it jump. */
+/* Smooth scrolling: a backdrop blur is re-rendered every frame the page scrolls or the sky
+   moves, so repeated tiles (cards, stats, columns...) use slightly more opaque glass without
+   blur on every screen. The sky behind is already a soft gradient, so it looks the same.
+   Blur stays on the few surfaces where it shows: sidebar, top bar, menus and dialogs.
+   The sky also holds still while you scroll (.hv-sky.still, set in main.jsx). */
+.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.btn-ghost,.chip-btn,.stage-pill,.hero-chip{
+  -webkit-backdrop-filter:none;backdrop-filter:none;background-color:var(--card-touch)}
+.hv-sky.still i{animation-play-state:paused}
+/* Phones and touch screens: the sky stops drifting, and is sized to the large viewport so the
+   collapsing address bar doesn't make it jump. */
 @media (hover:none),(max-width:900px){
   .hv-sky{bottom:auto;height:100vh;height:100lvh;transform:translateZ(0)}
   .hv-sky i{animation:none!important;will-change:auto}
-  .sidebar,.action-center,.card,.table-card,.kanban-col,.stat,.strip-item,.fu-card,.resume-card,.template,.hint-strip,.week-col,.btn-ghost,.chip-btn,.stage-pill,.hero-chip{
-    -webkit-backdrop-filter:none;backdrop-filter:none;background-color:var(--card-touch)}
+  .sidebar{-webkit-backdrop-filter:none;backdrop-filter:none;background-color:var(--card-touch)}
   .topbar{-webkit-backdrop-filter:blur(16px) saturate(150%);backdrop-filter:blur(16px) saturate(150%)}
   .stat:not(:disabled):hover,.kcard:hover,.nav-item:hover,.btn-ghost:hover,.btn-primary:hover:not(:disabled){transform:none}
 }

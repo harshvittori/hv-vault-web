@@ -136,6 +136,7 @@
     "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
+    "Think before you act. If something is unclear or looks like a mistake (the same task twice, a time that could be AM or PM, a date that doesn't fit, a missing time for a timed task), ask ONE short question with answer instead of guessing. Never invent a date: use context.now for today, tomorrow and weekdays.",
     "Day plans (HV Reset): plan only what the user asked for. If they name one or two tasks ('kal 8 baje study'), the plan has just those blocks: do not add breaks, meals or other tasks they did not ask for. Use the length they give; if none, 60 minutes. For a whole day ('poora din plan karo', a list of several tasks), follow these rules too: one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
     "Shifting the plan ('sab 7:30 PM se shuru karo', 'late ho gaya, baaki sab shift karo', 'push everything by 1 hour'): call editDayPlan with EVERY block of today_plan that is not done, in the same order, back to back from the new start (default: context.now rounded up to the next 15 minutes), keeping each block_id, title, kind and duration_min. Leave done blocks as they are. If it runs past midnight just keep counting (24:15, 24:45); the app fits it into the day.",
   ].join("\n");
@@ -480,8 +481,9 @@
     }
     notes.push("Fitted the day before midnight (it ran " + Math.round(before - END) + " min over): " + (dropped.length ? "removed " + dropped.join(", ") + "; " : "") + "shortened blocks where needed. Core tasks kept, meals kept.");
   }
-  function fixPlan(blocksIn, current) {
-    const notes = [];
+  function fixPlan(blocksIn, current, opts) {
+    opts = opts || {};
+    const notes = [], addedMeals = [];
     let blocks = [];
     (blocksIn || []).forEach((b) => {
       const base = { block_id: b.block_id, start: toMin(b.start), duration_min: Math.round(Number(b.duration_min)), title: String(b.title).trim(), kind: b.kind, core: typeof b.core === "boolean" ? b.core : ["apply", "prep", "outreach"].indexOf(b.kind) >= 0 };   // an explicit choice wins
@@ -530,7 +532,7 @@
     }
     const open = () => blocks.filter((b) => !b.locked);                  // finished blocks don't decide where meals go
     const covers = (w) => { const l = open(); return l.length && l[0].start < w.to && l.reduce((m, b) => Math.max(m, b.start + b.duration_min), 0) > w.from; };
-    MEALS.forEach((w) => {
+    if (opts.meals !== false) MEALS.forEach((w) => {
       if (!covers(w) || blocks.some((b) => b.kind === "meal" && b.start < w.to && b.start + b.duration_min > w.from)) return;
       const free = open().find((b) => b.kind === "free" && b.start < w.to && b.start + b.duration_min > w.from);
       if (free) {                                                        // put the meal inside free time
@@ -541,18 +543,22 @@
         if (pre >= 5) blocks.push(Object.assign({}, free, { duration_min: pre }));
         blocks.push({ start: at, duration_min: w.len, title: w.name, kind: "meal", core: false });
         if (after >= 5) blocks.push(Object.assign({}, free, { block_id: undefined, start: at + w.len, duration_min: after }));
+      } else if (!open().some((b) => b.start < w.at + w.len && b.start + b.duration_min > w.at)) {   // the usual meal time is free: eat then
+        blocks.push({ start: w.at, duration_min: w.len, title: w.name, kind: "meal", core: false });
       } else {                                                           // insert and push later blocks
         const l = open(), at = l.filter((b) => b.start + b.duration_min <= w.at).reduce((m, b) => Math.max(m, b.start + b.duration_min), l[0].start);
         l.forEach((b) => { if (b.start >= at && b.kind !== "free") b.start += w.len; });   // free time keeps its start
         blocks.push({ start: at, duration_min: w.len, title: w.name, kind: "meal", core: false });
       }
-      notes.push("Added " + w.name.toLowerCase() + " at " + niceTime(hhmm(blocks.find((b) => b.title === w.name && b.kind === "meal").start)) + " (never skip a meal).");
+      { const at = blocks.find((b) => b.title === w.name && b.kind === "meal").start; addedMeals.push(w.name + " at " + niceTime(hhmm(at)));
+        notes.push("Added " + w.name.toLowerCase() + " at " + niceTime(hhmm(at)) + " (never skip a meal)."); }
       blocks.sort((a, b) => a.start - b.start);
     });
     const l0 = open(), dn = MEALS[1];
-    if (l0.length && l0[0].start >= dn.to && l0[0].start < 1440 && !blocks.some((b) => b.kind === "meal" && b.start + b.duration_min > dn.from)) {   // starting after 10 PM with no dinner yet: eat first
+    if (opts.meals !== false && l0.length && l0[0].start >= dn.to && l0[0].start < 1440 && !blocks.some((b) => b.kind === "meal" && b.start + b.duration_min > dn.from)) {   // starting after 10 PM with no dinner yet: eat first
       l0.forEach((b) => { b.start += dn.len; });
       blocks.push({ start: l0[0].start - dn.len, duration_min: dn.len, title: dn.name, kind: "meal", core: false });
+      addedMeals.push("Dinner at " + niceTime(hhmm(l0[0].start - dn.len)));
       notes.push("Added dinner at " + niceTime(hhmm(l0[0].start - dn.len)) + " first (never skip a meal).");
     }
     blocks.sort((a, b) => a.start - b.start);
@@ -565,7 +571,7 @@
     blocks = blocks.filter((b) => b.duration_min >= 5);
     fitDay(blocks, notes);
     blocks = blocks.filter((b) => b.duration_min >= 5);
-    return { blocks: blocks.map((b) => ({ block_id: b.block_id, start: hhmm(b.start), duration_min: b.duration_min, title: b.title, kind: b.kind, core: !!b.core })), notes };
+    return { blocks: blocks.map((b) => ({ block_id: b.block_id, start: hhmm(b.start), duration_min: b.duration_min, title: b.title, kind: b.kind, core: !!b.core })), notes, addedMeals };
   }
 
   /* ---------------- plain-language cards ---------------- */
@@ -850,8 +856,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const r = item.res, el = item.el, data = host.getData ? host.getData() : null;
       el.className = "hvai-card";
       if (r.status === "choose") {
-        el.innerHTML = '<div class="hvai-ct">' + esc(r.message) + '</div>' + r.options.map((o) => '<button class="b hvai-opt" data-id="' + esc(o.id) + '">' + esc(o.label) + '</button>').join("") + '<div class="hvai-row"><button class="b" data-a="cancel">Cancel</button></div>';
-        el.querySelectorAll(".hvai-opt").forEach((b) => b.addEventListener("click", () => { item.res = choose(r, b.dataset.id); paint(item, batch); }));
+        el.innerHTML = '<div class="hvai-ct">' + (r.next ? "Quick question" : "Which one?") + '</div><div class="hvai-cx">' + esc(r.message) + '</div>' + r.options.map((o) => '<button class="b hvai-opt" data-id="' + esc(o.id) + '">' + esc(o.label) + '</button>').join("") + '<div class="hvai-row"><button class="b" data-a="cancel">Cancel</button></div>';
+        el.querySelectorAll(".hvai-opt").forEach((b) => b.addEventListener("click", () => { if (r.next) { const n = r.next(b.dataset.id); item.res = prepare(n.action, host, n.meta); } else item.res = choose(r, b.dataset.id); paint(item, batch); }));
       } else if (r.status === "handoff") {
         const d = describe(r.action, data);
         el.innerHTML = '<div class="hvai-ct">' + esc(d.icon + " " + d.title) + '</div><div class="hvai-cx">' + esc(d.text) + "</div>" + (d.sub ? '<div class="hvai-cs">' + esc(d.sub) + "</div>" : "") +
@@ -900,7 +906,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         });
         delete args.notes;                                                // added by prepare() for display; not part of the action
         if (item.draft) { args.blocks = item.draft.filter((b) => b.title.trim()).map((b) => ({ start: m2hm(hm2m(b.start)), duration_min: b.duration_min, title: b.title.trim(), kind: b.kind, core: !!b.core })).sort((x, y) => hm2m(x.start) - hm2m(y.start)); item.draft = null; }
-        const next = prepare({ type: item.res.action.type, args }, host);
+        const next = prepare({ type: item.res.action.type, args }, host, Object.assign({}, item.res.meta, { dupsOk: true, meals: (item.res.meta && item.res.meta.meals) || "yes" }));   // the user edited it by hand: don't ask again
         item.res = next; item.state = "pending"; paint(item, batch); return;
       }
       if (a === "confirm") return execute(batch, [item]);
@@ -934,16 +940,43 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       } catch (e) { say("sys", "Couldn't apply: " + (e && e.message || e), false); }
       finally { busy = false; footer(batch); }
     }
-    function prepare(action, h) {
+    /* HV AI thinks before it plans: anything that looks off becomes a one-tap question, never a silent guess */
+    const durText = (d) => d < 60 ? d + " min" : Math.floor(d / 60) + "h" + (d % 60 ? " " + (d % 60) + "m" : "");
+    function dupPair(blocks) {                                           // the same task twice, back to back ("Project" 8-9 and 9-10)
+      const l = (blocks || []).map((b, i) => ({ i, s: toMin(b.start), e: toMin(b.start) + (Number(b.duration_min) || 0), t: norm(b.title), k: b.kind, b })).sort((x, y) => x.s - y.s);
+      for (let j = 1; j < l.length; j++) { const a = l[j - 1], c = l[j];
+        if (a.t && a.t === c.t && ["meal", "rest", "free"].indexOf(a.k) < 0 && c.s - a.e >= 0 && c.s - a.e <= 15) return [a, c]; }
+      return null;
+    }
+    function prepare(action, h, meta) {
+      meta = meta || {};
       action = normalize(action);
       const data = h.getData ? h.getData() : null;
       if ((action.type === "buildDayPlan" || action.type === "editDayPlan") && validate(action).ok) {
+        const today = istNow().date;
+        if (action.args.date && action.args.date < today) return { status: "invalid", action, message: niceDate(action.args.date) + " has already passed. Which day should I plan: today or tomorrow?" };
+        const dp = meta.dupsOk ? null : dupPair(action.args.blocks);
+        if (dp) {
+          const a = dp[0], c = dp[1], name = a.b.title;
+          return { status: "choose", action, message: "\u201c" + name + "\u201d is at " + niceTime(hhmm(a.s)) + " and again at " + niceTime(hhmm(c.s)) + ". Is it one task, or two separate sessions?",
+            options: [{ id: "one", label: "One task, " + niceTime(hhmm(a.s)) + " to " + niceTime(hhmm(c.e)) + " (" + durText(c.e - a.s) + ")" }, { id: "two", label: "Two separate sessions" }],
+            next: (id) => { const args = Object.assign({}, action.args);
+              if (id === "one") args.blocks = action.args.blocks.filter((b, i) => i !== c.i).map((b) => b === a.b ? Object.assign({}, b, { duration_min: c.e - a.s }) : b);
+              return { action: { type: action.type, args }, meta: Object.assign({}, meta, { dupsOk: true }) }; } };
+        }
         const cur = action.type === "editDayPlan" && h.getPlan ? (h.getPlan() || {}).blocks : null;
-        const f = fixPlan(action.args.blocks, cur && cur.map((b) => ({ id: b.id, start: b.start, duration_min: b.duration_min, title: b.title, kind: b.kind, core: b.core, done: b.done })));
+        const curL = cur && cur.map((b) => ({ id: b.id, start: b.start, duration_min: b.duration_min, title: b.title, kind: b.kind, core: b.core, done: b.done }));
+        const f = fixPlan(action.args.blocks, curL, { meals: meta.meals !== "no" });
+        if (!meta.meals && f.addedMeals.length) {
+          const one = f.addedMeals.length === 1, what = one ? f.addedMeals[0].split(" ")[0].toLowerCase() : "lunch and dinner";
+          return { status: "choose", action, message: "Your plan runs through " + what + " time. Add " + f.addedMeals.join(" and ") + "?",
+            options: [{ id: "yes", label: "Yes, add " + (one ? what : "both") }, { id: "no", label: "No, skip meals" }],
+            next: (id) => ({ action, meta: Object.assign({}, meta, { meals: id }) }) };
+        }
         action = { type: action.type, args: Object.assign({}, action.args, { blocks: f.blocks, notes: f.notes }) };
         if (!h.canPlan) return h.planHandoff ? { status: "handoff", action, url: h.planHandoff(action) } : { status: "notfound", action, message: "Day plans live in HV Reset. Open Reset and ask HV AI there." };
         const v = validate({ type: action.type, args: { date: action.args.date, blocks: action.args.blocks } });
-        return v.ok ? { status: "ready", action } : { status: "invalid", action, message: v.errors.join("; ") };
+        return v.ok ? { status: "ready", action, meta } : { status: "invalid", action, message: v.errors.join("; ") };
       }
       return resolve(action, data, { today: istNow().date });
     }
@@ -967,7 +1000,9 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       busy = true; send.disabled = true; const typing = add("hvai-typing", "HV AI is thinking…");
       let r;
       const cw = Object.assign({}, c, { onWait: () => { typing.textContent = "Lots of people are using HV AI right now. One moment…"; } });
-      try { r = await interpret(cw, text, host.getContext(), history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
+      let ctx = host.getContext ? host.getContext() : null;
+      if (!ctx || typeof ctx !== "object") ctx = buildContext(host.getData ? host.getData() : null, host.getPlan ? host.getPlan() : null);   // never send the AI a context without today's date and time
+      try { r = await interpret(cw, text, ctx, history.slice(0, -1), host.app); } finally { typing.remove(); busy = false; send.disabled = false; }
       if (r.error) { say("sys", r.error === "NO_KEY" ? "Add your AI key in HV Vault > Settings > HV AI." : r.error, false); return; }
       const batch = { items: [] };
       const scope = scopeOf(host.app), all = (r.actions || []).slice(0, 12);

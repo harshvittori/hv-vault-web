@@ -1,6 +1,7 @@
-/* Web only: HV Vault opens after Google sign-in, and only once that account's data has
-   been loaded onto this device. The data lives in the Google account (Firestore); the
-   browser just keeps a cache. Desktop (Electron) and unconfigured builds skip the gate. */
+/* Web only. Anyone can use HV Vault without an account (guest: nothing is saved, see
+   web-bridge.js). After Google sign-in, the app opens once that account's data has been
+   loaded onto this device. The data lives in the Google account (Firestore); the browser
+   just keeps a cache. Desktop (Electron) and unconfigured builds skip this. */
 import React, { useEffect, useState } from "react";
 
 const CSS = `
@@ -50,14 +51,13 @@ const friendly = (e) => {
   return "Sign-in failed: " + ((e && e.message) || e);
 };
 
+export { friendly as signInError, G as GoogleG };
 export default function AuthGate({ children }) {
   const cloud = typeof window !== "undefined" && window.hv && window.hv.cloud;
   const gated = !!(cloud && cloud.configured);
   const [known, setKnown] = useState(false);
   const [user, setUser] = useState(gated ? cloud.user : null);
   const [st, setSt] = useState(gated ? cloud.status() : {});
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
 
   useEffect(() => {
     if (!gated) return;
@@ -66,26 +66,13 @@ export default function AuthGate({ children }) {
     return () => { a(); b(); };
   }, []);
 
-  if (!gated || (user && st.ready)) return children;
+  if (!gated || (known && !user) || (user && st.ready)) return children;   // guests use the app straight away
 
   const icon = typeof document !== "undefined" && document.querySelector('link[rel="icon"]');
-  const signIn = async () => {
-    setErr(""); setBusy(true);
-    try { await cloud.signIn(); } catch (e) { setErr(friendly(e)); }
-    setBusy(false);
-  };
+
 
   let body;
   if (!known) body = <p>Loading…</p>;
-  else if (!user) body = (
-    <>
-      <p className="hv-gate-tag">Your job hunt, one calm place.</p>
-      <p>Sign in with Google. Your jobs, companies and resumes are saved to your account, so your phone and laptop always match.</p>
-      {err && <p className="hv-gate-err">{err}</p>}
-      <button className="hv-gate-btn" onClick={signIn} disabled={busy}>{G}{busy ? "Signing in…" : "Continue with Google"}</button>
-      <p className="hv-gate-small">Only you can see your data.</p>
-    </>
-  );
   else if (st.state === "error") body = (
     <>
       <p>Signed in as <strong>{user.email || user.name}</strong>, but your data couldn't be loaded.</p>

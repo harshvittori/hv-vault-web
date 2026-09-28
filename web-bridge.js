@@ -3,7 +3,11 @@
    runs inside the desktop app. In a browser it provides:
      window.storage   IndexedDB on this device, plus optional cloud sync (Google login)
      window.hv        AI calls from the browser, backup download/restore, cloud controls
-   Cloud sync: signing in with Google is required on the web (see auth-gate.jsx). The
+   Guests: on the web anyone can use HV Vault without signing in. A guest's data lives only in
+   memory (this tab), nothing is written to the browser or the cloud, and the first real change
+   fires "hv-guest-change" so the app can ask them to sign in to save. On sign-in the guest's data
+   joins the account like a device's own data (join below).
+   Cloud sync: signing in with Google is what saves data on the web. The
    Google account is the home of the data; IndexedDB is only this device's cache of it
    and is wiped on sign-out. Every change is saved to the cache first, then pushed to the
    signed-in user's own Firestore space. Other devices pull changes every 15 seconds and on focus.
@@ -53,6 +57,16 @@ if (typeof window !== "undefined" && !window.storage) {
   const statusSubs = new Set();
   const setStatus = (state, error) => { status.state = state; status.error = error || ""; if (state === "synced") status.last = Date.now(); statusSubs.forEach((cb) => { try { cb({ ...status }); } catch (e) {} }); };
   const C = () => window.HVCloud;
+  /* ---------- guest (not signed in): memory only ---------- */
+  const GM = new Map(); let guestBase = null, guestDirty = false;
+  const guestOn = () => !!(C() && C().configured && !C().user);
+  const contentSig = (raw) => { try { const p = JSON.parse(raw); delete p.settings; return hash(JSON.stringify(p)); } catch (e) { return ""; } };
+  function guestWrite(key) {
+    if (localOnly(key)) return;
+    if (key === MAIN) { const sig = contentSig(GM.get(key)); if (guestBase === null) { guestBase = sig; return; } if (sig === guestBase) return; }
+    guestDirty = true;
+    window.dispatchEvent(new CustomEvent("hv-guest-change"));
+  }
   const linked = () => C() && C().user && meta.uid === C().user.uid;
 
   async function getManifest() { const g = await C().getValue("meta/hv"); try { return g ? JSON.parse(g.value) || {} : {}; } catch (e) { return {}; } }
@@ -159,7 +173,7 @@ if (typeof window !== "undefined" && !window.storage) {
   let inboxHandler = null, inboxBusy = false, inboxAgain = false;
   const readLocalInbox = () => { try { const a = JSON.parse(localStorage.getItem(LINBOX) || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } };
   async function processInbox() {
-    if (!inboxHandler) return;
+    if (!inboxHandler || guestOn()) return;             // a guest session never takes actions meant for an account
     if (inboxBusy) { inboxAgain = true; return; }
     inboxBusy = true;
     try {
@@ -199,6 +213,11 @@ if (typeof window !== "undefined" && !window.storage) {
   async function connect(u) {
     status.ready = false; setStatus("syncing");
     try {
+      if (guestDirty) {                                        // what they made before signing in joins the account
+        await wipeLocal();
+        for (const [k, v] of GM) await idbPut(k, v);
+        GM.clear(); guestDirty = false; guestBase = null;
+      }
       if (meta.uid && meta.uid !== u.uid) await wipeLocal();   // another account used this browser before
       if (meta.uid === u.uid) await pull();                    // returning device: the cache is valid even if offline
       else await join(u);
@@ -214,12 +233,13 @@ if (typeof window !== "undefined" && !window.storage) {
 
   window.storage = {
     async get(key) {
-      const v = await idbGet(key);
+      const v = guestOn() ? GM.get(key) : await idbGet(key);
       if (v === undefined) throw new Error("Key not found: " + key);
       return { key, value: v };
     },
     async set(key, value) {
       const v = String(value);
+      if (guestOn()) { GM.set(key, v); guestWrite(key); return { key, value }; }
       await idbPut(key, v);
       if (!localOnly(key)) {
         const h = hash(v), m = meta.keys[key];
@@ -228,16 +248,19 @@ if (typeof window !== "undefined" && !window.storage) {
       return { key, value };
     },
     async delete(key) {
+      if (guestOn()) { GM.delete(key); guestWrite(key); return { key, deleted: true }; }
       await idbDel(key);
       if (!localOnly(key)) { const m = meta.keys[key]; meta.keys[key] = { t: Date.now(), del: true, p: (m && m.p) || 0 }; saveMeta(); schedulePush(key); }
       return { key, deleted: true };
     },
-    async list(prefix = "") { return { keys: (await idbKeys()).filter((k) => !prefix || k.startsWith(prefix)) }; },
+    async list(prefix = "") { return { keys: (guestOn() ? [...GM.keys()] : await idbKeys()).filter((k) => !prefix || k.startsWith(prefix)) }; },
   };
 
   const cloudApi = {
     get configured() { return !!(C() && C().configured); },
     get user() { return C() ? C().user : null; },
+    get guest() { return guestOn(); },                 // using HV Vault without an account: nothing is saved
+    get guestDirty() { return guestOn() && guestDirty; },
     status: () => ({ ...status }),
     onStatus(cb) { statusSubs.add(cb); return () => statusSubs.delete(cb); },
     onUser(cb) { return C() ? C().onChange(cb) : () => {}; },

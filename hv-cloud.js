@@ -20,7 +20,7 @@
   const ready = new Promise((r) => (readyResolve = r));
 
   const emit = () => subs.forEach((cb) => { try { cb(user); } catch (e) {} });
-  const setUser = (u) => { user = u ? { uid: u.uid, email: u.email || "", name: u.displayName || "" } : null; emit(); readyResolve(); };
+  const setUser = (u) => { user = u ? { uid: u.uid, email: u.email || "", name: u.displayName || "", photo: u.photoURL || "" } : null; emit(); readyResolve(); };
 
   const load = (src) => new Promise((res, rej) => {
     const s = document.createElement("script"); s.src = src; s.onload = res; s.onerror = rej; document.head.appendChild(s);

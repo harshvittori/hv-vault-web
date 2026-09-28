@@ -630,6 +630,9 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
 .hvai-msg.ai{align-self:flex-start;background:var(--hvai-card);border:1px solid var(--hvai-line);border-bottom-left-radius:7px}
 .hvai-msg.me{align-self:flex-end;background:var(--hvai-grad);color:#fff;border-bottom-right-radius:7px;box-shadow:0 8px 20px -12px rgba(64,88,200,.8)}
 .hvai-msg.sys{align-self:center;max-width:100%;font-size:13px;color:var(--hvai-muted);background:none;padding:0 8px;text-align:center}
+.hvai-sugg{align-self:flex-start;display:flex;flex-wrap:wrap;gap:8px;max-width:92%}
+.hvai-sugg .b{border-radius:999px;padding:8px 14px;font-size:14px;font-weight:600;border:1px solid var(--hvai-line);background:var(--hvai-card);color:inherit;cursor:pointer}
+.hvai-sugg .b:hover{border-color:currentColor}
 .hvai-card{align-self:stretch;border:1px solid var(--hvai-line);border-radius:20px;padding:12px 14px;background:var(--hvai-card)}
 .hvai-card.danger{border-color:var(--hvai-danger)}
 .hvai-card.done{opacity:.6}
@@ -770,10 +773,20 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         history.slice(-20).forEach((h) => add("hvai-msg " + (h.role === "user" ? "me" : "ai"), esc(h.text)));
         const c = cfg();
         if (!hasAI(c)) say("ai", host.keyHelp || "HV AI needs an AI key. Open HV Vault > Settings > HV AI, paste your Gemini key (free from aistudio.google.com) and save. Then come back here.", false);
-        else if (firstName()) say("ai", hello() + ", " + firstName() + "! Bolo, kya karna hai?", false);
-        else { askingName = true; say("ai", hello() + "! Main HV AI hoon. Aapka naam kya hai?", false); }
+        else if (firstName()) say("ai", hello() + ", " + firstName() + "! " + (host.app === "reset" ? "How can I help you plan your day?" : "Bolo, kya karna hai?"), false);
+        else say("ai", hello() + "! I'm HV AI. " + (host.app === "reset" ? "How can I help you plan your day?" : "How can I help with your job search today?"), false);   // no name question: just help
+        if (hasAI(c) && !history.length) suggest();
       }
       setTimeout(() => input.focus(), 50);
+    }
+    /* A new conversation gets 2-3 ready prompts. Tapping one sends it (HV Reset) or puts it in the box to edit (HV Vault, whose examples name companies). */
+    const SUGG = host.suggestions || (host.app === "reset"
+      ? [["Plan my day", "Plan my day: study 9 to 1, lunch at 1, gym at 6 PM", true], ["Plan tomorrow", "Plan tomorrow: work 10 to 6 with a lunch break at 1", true], ["Add a walk", "Add a 30 minute walk at 7 PM today", true]]
+      : [["Add an interview", "Kal 4 baje ___ ka interview hai", false], ["Save a follow-up", "Follow up with ___ on Friday", false], ["What's due today?", "What follow-ups are due today?", true]]);
+    function suggest() {
+      const box = add("hvai-sugg", SUGG.map((x, i) => '<button type="button" class="b" data-i="' + i + '">' + esc(x[0]) + '</button>').join(""));
+      box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { const x = SUGG[+b.dataset.i]; box.remove();
+        if (x[2]) run(x[1]); else { input.value = x[1]; grow(); input.focus(); const k = input.value.indexOf("___"); if (k >= 0) input.setSelectionRange(k, k + 3); } }));
     }
     function close() { panel.hidden = true; fab.hidden = false; }
     fab.addEventListener("click", open); panel.querySelector(".hvai-x").addEventListener("click", close);
@@ -889,6 +902,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (!text || busy) return;
       input.value = ""; grow();
       const c = cfg();
+      { const sg = log.querySelector(".hvai-sugg"); if (sg) sg.remove(); }
       say("user", text);
       if (askingName) {                                              // the first answer after "Aapka naam kya hai?"
         askingName = false; const nm = nameFrom(text);

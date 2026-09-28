@@ -9,6 +9,7 @@ import {
   Tag as TagIcon, Moon, Sun, FileText, Star, BookOpen, ListTodo, MessageSquareText,
   Sparkles, Eye, Files, AlarmClock, CircleDot, GraduationCap, Zap, User, Wand2, Image as ImageIcon, CalendarDays, ChevronLeft, RotateCcw, Cloud, Info, RefreshCw, LogOut, ShieldCheck, FileDown, FileUp, Archive,
 } from "lucide-react";
+import { signInError, GoogleG } from "./auth-gate.jsx";
 import "./shared/apply-rule.js";   // window.HVApplyRule: the 2-minute apply rule shared with HV Reset
 import "./shared/hv-ai.js";        // window.HVAI: the HV AI assistant shared with HV Reset
 import "./shared/hv-ai-tests.js";  // window.HVAI_TESTS: HV AI command test set (Settings > self-test)
@@ -700,7 +701,8 @@ export default function HVVault() {
         };
       },
     });
-    aiRef.current.setVisible(!!dataRef.current.profile);   // hidden during profile setup; render keeps it in sync after
+    aiRef.current.setVisible(!!dataRef.current.profile || IS_GUEST());   // hidden during profile setup; render keeps it in sync after
+    return () => { if (aiRef.current && aiRef.current.destroy) aiRef.current.destroy(); aiRef.current = null; };   // the app remounts after sign-in
   }, [hasData]);
   useEffect(() => {
     const cloud = typeof window !== "undefined" && window.hv && window.hv.cloud;
@@ -799,7 +801,7 @@ export default function HVVault() {
   if (!data) return (<div className="app" data-theme="light"><StyleBlock /><Sky /><div className="loading-screen"><div className="loading-mark"><BrandMark size={52} /></div>Opening your vault…</div></div>);
 
   const theme = data.settings.theme || "light";
-  const needsProfile = IS_WEB() && !setupLater && (!data.profile || setupCelebrating);
+  const needsProfile = IS_WEB() && !IS_GUEST() && !setupLater && (!data.profile || setupCelebrating);   // guests explore first; setup comes after sign-in
   if (aiRef.current) aiRef.current.setVisible(!needsProfile);
   const toggleTheme = () => setData((d) => ({ ...d, settings: { ...d.settings, theme: theme === "light" ? "dark" : "light" } }));
 
@@ -876,6 +878,7 @@ export default function HVVault() {
             {globalQuery && <button className="icon-btn" onClick={() => setGlobalQuery("")}><X size={14} /></button>}
           </div>
           <div className="topbar-actions">
+            <AccountButton notify={notify} />
             <button className="icon-btn theme-toggle" onClick={toggleTheme} title={theme === "light" ? "Switch to dark mode" : "Switch to light mode"}>
               {theme === "light" ? <Moon size={17} /> : <Sun size={17} />}
             </button>
@@ -964,6 +967,7 @@ export default function HVVault() {
         }} />
       )}
 
+      <GuestSave notify={notify} />
       {toast && <div className="toast"><CheckCircle2 size={15} /> {toast}</div>}
     </div>
   );
@@ -4481,6 +4485,7 @@ function EventModal({ initial, data, onSave, onDelete, onClose }) {
    Add an entry here for every release. */
 /* Web vs desktop wording. The same App.jsx ships as the Windows app and the website. */
 const IS_WEB = () => typeof window !== "undefined" && !!(window.hv && window.hv.isWeb);
+const IS_GUEST = () => IS_WEB() && !!(window.hv.cloud && window.hv.cloud.guest);   // using HV Vault without an account
 /* AI: on the website every AI feature uses the site's built-in AI (no key, ever). The desktop app has no
    built-in AI, so there it uses the key saved in Settings. */
 const AI_BUILTIN = () => typeof window !== "undefined" && !!(window.hv && window.hv.aiBuiltIn);
@@ -4498,6 +4503,14 @@ function runParse(st, text) {        // resume text → profile fields
 const ON_DEVICE = () => (IS_WEB() ? "in this browser" : "on your PC");
 
 const APP_CHANGELOG = {
+  "2.10.0": {
+    title: "Try it first, sign in to save",
+    points: [
+      "Anyone can use HV Vault without an account. Sign in with Google only when you want to save",
+      "A Sign in button and your account menu sit at the top of the page",
+      "HV AI chat history is saved to your account, so it's the same on your phone and laptop",
+    ],
+  },
   "2.9.3": {
     title: "Your times stay yours",
     points: [
@@ -4676,6 +4689,85 @@ function useCloud() {
   }, []);
   return { cloud, user, st };
 }
+/* Account button (top bar). Guests: "Sign in" with Google. Signed in: avatar with a menu. */
+async function signInWithGoogle(notify) {
+  try { await window.hv.cloud.signIn(); } catch (e) { const m = signInError(e); if (m) notify(m); }
+}
+function Avatar({ user, size }) {
+  const [bad, setBad] = useState(false);
+  const ini = ((user && (user.name || user.email)) || "?").trim()[0].toUpperCase();
+  return (
+    <span className="acc-av" style={{ width: size, height: size, fontSize: size * .45 }}>
+      {user && user.photo && !bad ? <img src={user.photo} alt="" referrerPolicy="no-referrer" onError={() => setBad(true)} /> : ini}
+    </span>
+  );
+}
+function AccountButton({ notify }) {
+  const { cloud, user, st } = useCloud();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const esc = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", off); document.addEventListener("keydown", esc);
+    return () => { document.removeEventListener("mousedown", off); document.removeEventListener("keydown", esc); };
+  }, [open]);
+  if (!IS_WEB() || !cloud || !cloud.configured) return null;
+  if (!user) return (
+    <button className="acc-signin" onClick={() => signInWithGoogle(notify)} title="Sign in with Google to save your data">
+      <span className="acc-g">{GoogleG}</span><span className="acc-lbl">Sign in</span>
+    </button>
+  );
+  const since = st.last ? fmtTime(new Date(st.last).toTimeString().slice(0, 5)) : "";
+  return (
+    <div className="acc-wrap" ref={ref}>
+      <button className="acc-btn" onClick={() => setOpen((o) => !o)} aria-haspopup="true" aria-expanded={open} aria-label={"Account: " + (user.email || user.name)}>
+        <Avatar user={user} size={32} />
+      </button>
+      {open && (
+        <div className="acc-menu" role="menu">
+          <div className="acc-who">
+            <Avatar user={user} size={44} />
+            <div><b>{user.name || user.email}</b><small>{user.name ? user.email : "Google account"}</small></div>
+          </div>
+          <p className="acc-note">{st.state === "error" ? "Sync problem. Retrying." : st.state === "syncing" ? "Saving…" : "Saved to your account" + (since ? " · " + since : "")}. Only you can see your data.</p>
+          <div className="acc-row">
+            <button className="btn btn-ghost btn-sm" onClick={() => { setOpen(false); cloud.signOut(); }}><LogOut size={13} /> Sign out</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+/* Guests: the first real change brings up a "Sign in to save" card; after "Not now", a pill stays. */
+function GuestSave({ notify }) {
+  const cloud = IS_WEB() && window.hv.cloud;
+  const [dirty, setDirty] = useState(!!(cloud && cloud.guestDirty));
+  const [card, setCard] = useState(false);
+  useEffect(() => {
+    if (!cloud) return;
+    let shown = false;
+    const on = () => { setDirty(true); if (!shown) { shown = true; setCard(true); } };
+    const leave = (e) => { if (cloud.guestDirty) { e.preventDefault(); e.returnValue = ""; } };
+    window.addEventListener("hv-guest-change", on); window.addEventListener("beforeunload", leave);
+    return () => { window.removeEventListener("hv-guest-change", on); window.removeEventListener("beforeunload", leave); };
+  }, []);
+  if (!cloud || !cloud.guest || !dirty) return null;
+  if (!card) return (
+    <button className="guest-pill" onClick={() => signInWithGoogle(notify)}><i /> Not saved · Sign in</button>
+  );
+  return (
+    <div className="guest-card" role="dialog" aria-label="Save your data">
+      <b>Want to keep this?</b>
+      <p>You can use HV Vault freely. To save your jobs, companies and follow-ups, sign in with Google. Only you can see your data.</p>
+      <div className="guest-row">
+        <button className="btn btn-primary guest-go" onClick={() => signInWithGoogle(notify)}><span className="acc-g">{GoogleG}</span> Sign in to save</button>
+        <button className="btn btn-ghost" onClick={() => setCard(false)}>Not now</button>
+      </div>
+    </div>
+  );
+}
 function CloudSyncCard({ notify }) {
   const { cloud, user, st } = useCloud();
   if (!cloud) return null;
@@ -4686,8 +4778,8 @@ function CloudSyncCard({ notify }) {
       {!cloud.configured ? (
         <SetRow icon={Cloud} title="Saved in this browser only" sub="Cloud sync isn't set up for this site." />
       ) : !user ? (
-        <SetRow icon={Cloud} title="Not signed in" sub="Sign in to keep your phone and laptop in sync.">
-          <button className="btn btn-primary btn-sm" onClick={signIn}>Sign in with Google</button>
+        <SetRow icon={Cloud} title="Not signed in" sub="You can use HV Vault freely, but nothing is saved. Sign in to save your data and use it on your phone and laptop.">
+          <button className="btn btn-primary btn-sm" onClick={() => signInWithGoogle(notify)}>Sign in with Google</button>
         </SetRow>
       ) : (<>
         <SetRow icon={User} title={user.email || user.name}
@@ -5254,6 +5346,32 @@ button{font-family:inherit;cursor:pointer}
   border:1px solid var(--line);border-radius:10px;padding:7px 12px;color:var(--slate2)}
 .searchwrap input{flex:1;border:0;background:none;font-size:13.5px;color:var(--text);outline:none}
 .topbar-actions{display:flex;gap:8px;margin-left:auto;align-items:center}
+.acc-signin{display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:4px 14px 4px 4px;border:1px solid var(--line,rgba(120,130,160,.3));background:var(--card);color:var(--text);font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 1px 2px rgba(20,30,60,.08)}
+.acc-signin:hover{background:var(--field)}
+.acc-g{width:26px;height:26px;border-radius:50%;background:#fff;display:inline-grid;place-items:center;flex:none;box-shadow:0 1px 3px rgba(0,0,0,.18)}
+.acc-g svg{width:16px;height:16px}
+.acc-wrap{position:relative}
+.acc-btn{border:0;background:none;padding:2px;border-radius:50%;cursor:pointer;display:inline-flex}
+.acc-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.acc-av{border-radius:50%;display:inline-grid;place-items:center;flex:none;overflow:hidden;background:linear-gradient(135deg,#4F66E0,#7C5CE0);color:#fff;font-weight:700;box-shadow:0 0 0 2px var(--card)}
+.acc-av img{width:100%;height:100%;object-fit:cover}
+.acc-menu{position:absolute;right:0;top:calc(100% + 10px);z-index:60;width:min(320px,calc(100vw - 24px));background:var(--glass-strong);-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);border:1px solid var(--line,rgba(120,130,160,.3));border-radius:18px;padding:16px;box-shadow:0 24px 60px -18px rgba(20,30,70,.45);color:var(--text)}
+.acc-who{display:flex;gap:12px;align-items:center;margin-bottom:10px}
+.acc-who b{display:block;font-size:15px}
+.acc-who small{display:block;color:var(--slate2);font-size:13px;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.acc-note{margin:0 0 12px;color:var(--slate);font-size:13.5px;line-height:1.45}
+.acc-row{display:flex;gap:8px;flex-wrap:wrap}.acc-row a{text-decoration:none}
+.guest-card{position:fixed;left:50%;bottom:max(20px,env(safe-area-inset-bottom));transform:translateX(-50%);z-index:90;width:min(460px,calc(100% - 32px));background:var(--glass-strong);-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);border:1px solid var(--line,rgba(120,130,160,.3));border-radius:22px;padding:20px;box-shadow:0 28px 70px -20px rgba(20,30,70,.5);color:var(--text);animation:gcin .45s cubic-bezier(.22,1,.36,1)}
+@keyframes gcin{from{opacity:0;transform:translate(-50%,16px)}}
+.guest-card b{font-size:18px}
+.guest-card p{margin:6px 0 14px;color:var(--slate);font-size:14.5px;line-height:1.5}
+.guest-row{display:flex;gap:10px;align-items:center}
+.guest-go{flex:1;justify-content:center}
+.guest-pill{position:fixed;left:max(16px,env(safe-area-inset-left));bottom:max(18px,env(safe-area-inset-bottom));z-index:80;display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:10px 16px;background:var(--glass-strong);-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);border:1px solid var(--line,rgba(120,130,160,.3));color:var(--text);font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 12px 30px -12px rgba(20,30,70,.4)}
+.guest-pill i{width:8px;height:8px;border-radius:50%;background:var(--gold)}
+body:has(.guest-card) .hvai-fab{opacity:0;pointer-events:none}
+body:has(.guest-card) .toast{bottom:calc(230px + env(safe-area-inset-bottom,0px))}
+@media (max-width:560px){.acc-signin .acc-lbl{display:none}.acc-signin{padding:4px}}
 .theme-toggle{border:1px solid var(--line)!important;border-radius:9px!important;width:34px;height:34px}
 .content{padding:24px 26px 60px;width:100%}
 

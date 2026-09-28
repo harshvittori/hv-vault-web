@@ -671,11 +671,53 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
   };
   const ENUMS = { stage: STAGES, priority: PRIORITIES, type: null };
 
+  let carryOver = null;                               // a guest's chat, handed to the next mount after sign-in (HV Vault remounts)
   function mount(host) {
     if (typeof document === "undefined" || document.querySelector(".hvai-fab")) return null;
     const st = document.createElement("style"); st.textContent = CSS; document.head.appendChild(st);
+    /* Chat history. On the website it belongs to the signed-in Google account (users/{uid}/ai/<app>,
+       with a per-account copy in this browser), so it follows you across devices. Guests' chats stay
+       in this tab only. The desktop app keeps it in this computer's storage, as before. */
     const HKEY = "hvai-history-" + (host.app || "app");
-    let history = []; try { history = JSON.parse(localStorage.getItem(HKEY) || "[]"); } catch (e) {}
+    const CL = () => (window.HVCloud && window.HVCloud.configured ? window.HVCloud : null);
+    const HPATH = "ai/" + (host.app || "app");
+    let history = [], histUid = null, histT = 0, histTimer = null, carry = null, dead = false;
+    const hkey = () => HKEY + (histUid ? "@" + histUid : "");
+    function loadLocal() {
+      history = []; histT = 0;
+      if (CL() && !histUid) return;                                     // guest: nothing stored
+      try { const o = JSON.parse(localStorage.getItem(hkey()) || "[]"); if (Array.isArray(o)) history = o; else if (o && Array.isArray(o.h)) { history = o.h; histT = o.t || 0; } } catch (e) {}
+    }
+    async function pushHist() {
+      const c = CL(), uid = histUid; if (!c || !uid || !c.user || c.user.uid !== uid) return;
+      try { await c.putValue(HPATH, JSON.stringify(history), histT || Date.now(), 0); }
+      catch (e) { clearTimeout(histTimer); histTimer = setTimeout(pushHist, 8000); }
+    }
+    async function pullHist() {
+      const c = CL(), uid = histUid; if (!c || !uid) return;
+      let g = null; try { g = await c.getValue(HPATH); } catch (e) { return; }
+      if (uid !== histUid || dead) return;
+      let changed = false;
+      if (g && g.t > histT) { try { history = JSON.parse(g.value) || []; histT = g.t; changed = true; } catch (e) {} }
+      if (!history.length) {                                            // this browser's chats from before accounts
+        try { const old = JSON.parse(localStorage.getItem(HKEY) || "[]"); if (Array.isArray(old) && old.length) { history = old; changed = true; } localStorage.removeItem(HKEY); } catch (e) {}
+      }
+      if (carry && carry.length) { history = history.concat(carry); changed = true; }   // what they asked before signing in
+      carry = null;
+      if (changed) { save(); rerender(); }
+      else if (!g && history.length) pushHist();
+    }
+    function useAccount() {
+      const c = CL(); if (!c) return;
+      const u = c.user ? c.user.uid : null;
+      if (u === histUid) return;
+      if (histUid && !u) { try { localStorage.removeItem(hkey()); } catch (e) {} }   // signed out: this browser forgets the chat
+      if (!histUid && u && history.length) carry = history.slice();
+      histUid = u; loadLocal(); rerender();
+      if (u) pullHist();
+    }
+    histUid = CL() && CL().user ? CL().user.uid : null; loadLocal();
+    if (histUid && carryOver) { carry = carryOver; } carryOver = null;
     let lastUndo = null, busy = false;
     const fab = document.createElement("button"); fab.className = "hvai-fab"; fab.setAttribute("aria-label", "Open HV AI"); fab.innerHTML = (host.logoSVG || "") + "<span>HV AI</span>";
     const panel = document.createElement("section"); panel.className = "hvai"; panel.hidden = true; panel.setAttribute("aria-label", "HV AI");
@@ -686,10 +728,18 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     panel.innerHTML = '<div class="hvai-head">' + headLogo + '<div class="hvai-ttl"><b>HV AI</b><small>Hindi · English · Hinglish</small></div><button class="hvai-x" aria-label="Close HV AI">' + ICON_X + '</button></div>' +
       '<div class="hvai-log" role="log" aria-live="polite"></div>' +
       '<div class="hvai-bar"><div class="hvai-box"><textarea class="hvai-in" rows="1" placeholder="Bolo ya likho…"></textarea><button class="hvai-mic" aria-label="Hold to talk" title="Hold to talk">' + ICON_MIC + '</button><button class="hvai-send" aria-label="Send">' + ICON_SEND + '</button></div><div class="hvai-hint">Hold the mic to talk · Enter to send</div></div>';
-    if (host.fabCSS) { const x = document.createElement("style"); x.textContent = host.fabCSS; document.head.appendChild(x); }   // e.g. lift it above a sticky button bar
+    if (host.fabCSS) { const x = document.createElement("style"); x.setAttribute("data-hvai-fab", ""); x.textContent = host.fabCSS; document.head.appendChild(x); }   // e.g. lift it above a sticky button bar
     document.body.appendChild(fab); document.body.appendChild(panel);
     const log = panel.querySelector(".hvai-log"), input = panel.querySelector(".hvai-in"), mic = panel.querySelector(".hvai-mic"), send = panel.querySelector(".hvai-send");
-    const save = () => { try { localStorage.setItem(HKEY, JSON.stringify(history.slice(-60))); } catch (e) {} };
+    const save = () => {
+      history = history.slice(-60);
+      if (!CL()) { try { localStorage.setItem(HKEY, JSON.stringify(history)); } catch (e) {} return; }   // desktop
+      if (!histUid) return;                                             // guest
+      histT = Date.now();
+      try { localStorage.setItem(hkey(), JSON.stringify({ t: histT, h: history })); } catch (e) {}
+      clearTimeout(histTimer); histTimer = setTimeout(pushHist, 1200);
+    };
+    function rerender() { if (typeof log === "undefined" || !log) return; log.innerHTML = ""; if (!panel.hidden) open(); }
     const scroll = () => { log.scrollTop = log.scrollHeight; };
     const add = (cls, html) => { const el = document.createElement("div"); el.className = cls; el.innerHTML = html; log.appendChild(el); scroll(); return el; };
     const say = (who, text0, keep) => { const text = who === "user" ? text0 : to12(text0); add("hvai-msg " + (who === "user" ? "me" : who === "sys" ? "sys" : "ai"), esc(text)); if (keep !== false && who !== "sys") { history.push({ role: who === "user" ? "user" : "ai", text }); save(); } };
@@ -708,6 +758,8 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     }
     function close() { panel.hidden = true; fab.hidden = false; }
     fab.addEventListener("click", open); panel.querySelector(".hvai-x").addEventListener("click", close);
+    const offAcc = CL() ? CL().onChange(useAccount) : null;
+    if (histUid) pullHist();
     const grow = () => { input.style.height = "auto"; const h = input.scrollHeight; input.style.height = Math.min(124, Math.max(40, h)) + "px"; input.style.overflowY = h > 124 ? "auto" : "hidden"; };
     input.addEventListener("input", grow);
     input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); run(); } });
@@ -888,7 +940,12 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       open(); if (note) say("ai", note, false);
       const batch = { items: [] }; (actions || []).forEach((a) => cardFor(prepare(a, host), batch)); footer(batch);
     }
-    return { open, close, run, showActions, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
+    // destroy: the host app is going away (HV Vault remounts after sign-in), so a new mount can take over
+    const destroy = () => {
+      dead = true; if (offAcc) offAcc(); clearTimeout(histTimer);
+      const guestChat = carry || (CL() && !histUid ? history : null);
+      carryOver = guestChat && guestChat.length ? guestChat.slice() : null; [fab, panel, st].forEach((el) => el && el.remove()); document.querySelectorAll("style[data-hvai-fab]").forEach((el) => el.remove()); };
+    return { open, close, run, showActions, destroy, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };
   }
 
   root.HVAI = { version: 1, guard, userRanges, pickConfig, builtInAI, hasAI, APPS, scopeOf, to12, niceTime, normTime, normalize, STAGES, TOOLS, SYSTEM, istNow, addDays, dateHints, buildContext, validate, resolve, choose, fixPlan, describe, interpret, transcribe, mount };

@@ -24,6 +24,8 @@ Screenshots use made-up sample data.
 
 ## How your data is stored
 
+- **Try it without an account.** Anyone can open HV Vault and use it, even add jobs and companies. As a guest nothing is saved: the data lives only in that tab (not in the browser's storage, not in the cloud). The first change brings up a "Sign in to save" card; after "Not now", a "Not saved · Sign in" pill stays, and closing the tab asks first. Signing in carries what you made into your account.
+- **HV AI chat history** is saved to your account too (`users/<id>/ai/vault`), so it follows you across devices. Guests' chats aren't saved.
 - **Your Google account is the home of your data.** After you sign in, everything (jobs, companies, follow-ups, settings and resume files) is saved in [Cloud Firestore](https://firebase.google.com/docs/firestore) under `users/<your account id>/`, in the Firebase project `harsh-reset`.
 - **Only you can read it.** Firestore security rules allow a signed-in user to read and write only their own `users/{uid}/` space and deny everything else.
 - **The browser keeps a working copy.** It makes the app fast and lets it keep working through a short connection drop. Changes are saved to your account within about a second, and other signed-in devices pick them up within about 15 seconds.

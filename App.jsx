@@ -5370,6 +5370,7 @@ button{font-family:inherit;cursor:pointer}
 .guest-pill{position:fixed;left:max(16px,env(safe-area-inset-left));bottom:max(18px,env(safe-area-inset-bottom));z-index:80;display:inline-flex;align-items:center;gap:8px;border-radius:999px;padding:10px 16px;background:var(--glass-strong);-webkit-backdrop-filter:blur(24px);backdrop-filter:blur(24px);border:1px solid var(--line,rgba(120,130,160,.3));color:var(--text);font-weight:700;font-size:14px;cursor:pointer;box-shadow:0 12px 30px -12px rgba(20,30,70,.4)}
 .guest-pill i{width:8px;height:8px;border-radius:50%;background:var(--gold)}
 body:has(.guest-card) .hvai-fab{opacity:0;pointer-events:none}
+body:has(.hvai:not([hidden])) .acc-signin,body:has(.hvai:not([hidden])) .acc-wrap,body:has(.hvai:not([hidden])) .guest-pill{visibility:hidden}
 body:has(.guest-card) .toast{bottom:calc(230px + env(safe-area-inset-bottom,0px))}
 @media (max-width:560px){.acc-signin .acc-lbl{display:none}.acc-signin{padding:4px}}
 .theme-toggle{border:1px solid var(--line)!important;border-radius:9px!important;width:34px;height:34px}

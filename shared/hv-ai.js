@@ -1128,12 +1128,13 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     function stopRec(cancel) {
       cancelled = !!cancel; live = false; showRec(false);
       if (rec && rec.state === "recording") rec.stop();
-      if (speech) { try { cancel ? speech.abort() : speech.stop(); } catch (err) {} speech = null; }
+      if (speech) { const r = speech; if (r.stopNow) r.stopNow(); try { cancel ? r.abort() : r.stop(); } catch (err) {} }   // onend finishes up
     }
     async function startRec() {
       const c = cfg();
       if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       cancelled = false;
+      if (liveSpeech()) return;
       if ((c.provider === "gemini" || c.provider === "builtin") && canRecord()) {   // Gemini hears the audio itself
         pending = true;
         let stream;
@@ -1161,16 +1162,53 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         if (holdMode && !pressing) stopRec(false);   // held and already let go while the mic was starting
         return;
       }
-      if (SR) {
-        speech = new SR(); speech.lang = "en-IN"; speech.interimResults = true; speech.continuous = true;
-        let finalText = "";
-        speech.onresult = (ev) => { let s = ""; for (let i = 0; i < ev.results.length; i++) s += ev.results[i][0].transcript + " "; finalText = s.trim(); input.value = finalText; };
-        speech.onend = () => { live = false; showRec(false); speech = null; if (finalText && !cancelled) { input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); } };
-        speech.onerror = () => { live = false; showRec(false); };
-        try { speech.start(); live = true; showRec(true); } catch (err) {}
-        return;
-      }
       say("sys", "Voice isn't supported in this browser. Type instead.", false);
+    }
+    /* Live voice: the browser's own speech recognition writes the words into the box while you speak,
+       so there is nothing to wait for when you stop. If it can't run here (Firefox, Brave, blocked),
+       the recording + Gemini path above takes over. */
+    let srBroken = false;
+    function liveSpeech() {
+      if (!SR || srBroken) return false;
+      const base = input.value.trim();   // keep anything already typed
+      let done = "", heard = false, userStop = false;
+      const join = (a, b) => (a && b ? a + " " + b : a || b);
+      const show = (t) => { input.value = join(base, t); input.dispatchEvent(new Event("input")); input.scrollTop = input.scrollHeight; };
+      const session = () => {
+        const r = new SR(); r.lang = "en-IN"; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+        let cur = ""; r.t0 = Date.now();
+        r.onresult = (ev) => {
+          heard = true; r.got = true; let s = "";
+          for (let i = 0; i < ev.results.length; i++) {   // Android sends each result as the whole text so far: don't repeat it
+            const t = ev.results[i][0].transcript.trim(); if (!t) continue;
+            s = s && t.toLowerCase().startsWith(s.toLowerCase()) ? t : join(s, t);
+          }
+          cur = s; show(join(done, cur));
+        };
+        r.onerror = (ev) => {
+          const e = ev && ev.error;
+          if (e === "no-speech" || e === "aborted") return;
+          if (e === "not-allowed" && !heard) { userStop = true; say("sys", "Microphone permission is needed for voice.", false); return; }
+          if (!heard) { srBroken = true; userStop = true; r.fallback = true; }   // live voice doesn't work in this browser
+        };
+        r.onend = () => {
+          if (speech && speech !== r) return;   // an older session: a new one already took over
+          done = join(done, cur); cur = "";
+          if (r.fallback) { speech = null; live = false; showRec(false); input.value = base; if (!cancelled) startRec(); return; }
+          const flop = !r.got && Date.now() - r.t0 < 1500;   // ended straight away with nothing: don't spin
+          if (live && !userStop && speech === r && !flop) { try { speech = session(); speech.start(); return; } catch (err) {} }   // the browser stopped on its own (a pause): keep listening
+          if (speech === r) speech = null;
+          live = false; showRec(false);
+          if (cancelled) { input.value = base; input.dispatchEvent(new Event("input")); return; }
+          show(done);
+          if (done) { input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); }
+          else say("sys", "Couldn't hear anything. Try again.", false);
+        };
+        r.stopNow = () => { userStop = true; };
+        return r;
+      };
+      try { speech = session(); speech.start(); live = true; showRec(true); return true; }
+      catch (err) { speech = null; srBroken = true; return false; }
     }
     function micDown(e) {
       e.preventDefault();

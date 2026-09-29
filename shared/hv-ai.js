@@ -145,7 +145,7 @@
     "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
-    "Deleting in HV Reset: to remove tasks use deleteTasks (one day); to empty whole days use clearPlans. Never send buildDayPlan or editDayPlan with no blocks. Nothing is deleted until the user confirms the card, so never say it is already deleted or cleared.",
+    "Deleting in HV Reset: to remove tasks use deleteTasks (one day); to empty whole days use clearPlans. Never send buildDayPlan or editDayPlan with no blocks. Nothing is deleted until the user confirms the card, so never say it is already deleted or cleared. Only the days the user names: 'today's tasks / aaj ke sab task' = clearPlans with dates:[today]; 'kal ka' = dates:[tomorrow]. Use all_upcoming only when they clearly say every future day ('aage ke sab din', 'all upcoming days').",
     "Think before you act. If something is unclear or looks like a mistake (the same task twice, a time that could be AM or PM, a date that doesn't fit, a missing time for a timed task), ask ONE short question with answer instead of guessing. Never invent a date: use context.now for today, tomorrow and weekdays.",
     "If context.pending_question is present, you asked the user that question about the plan in context.pending_question.plan, and their message is most likely the answer: return that whole plan again (same date) with their answer applied, as buildDayPlan (or editDayPlan when changing today's plan).",
     "Day plans (HV Reset): plan only what the user asked for. If they name one or two tasks ('kal 8 baje study'), the plan has just those blocks: do not add breaks, meals or other tasks they did not ask for. Use the length they give; if none, 60 minutes. For a whole day ('poora din plan karo', a list of several tasks), follow these rules too: one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
@@ -292,8 +292,27 @@
       return Object.assign({}, a, { args: Object.assign({}, a.args, { blocks }) });
     });
   }
+  /* deletes only touch the day the user named: "aaj ke sab task hata do" must never clear 60 days */
+  const DAY_TODAY = /\b(today'?s?|tonight|aaj|aj|aajka|aajke|ajka|ajke)\b|आज/i, DAY_TMRW = /\b(tomorrow'?s?|kal|kl|kalka|kalke)\b|कल/i;
+  const MANY_DAYS = /\b(upcoming|future|aage|agle|next|week|weeks|month|every ?day|everyday|daily|roz|rozana|har ?din|sab(hi)? din|saare din|sare din|all (the )?days|all (the )?dates|days|dates|din tak|onwards?|till|until)\b|\b(aaj|today|kal|tomorrow) se\b|\d{1,2}\s*(tak|to|-)\s*\d/i;
+  const OTHER_DAY = /\b(parso|parson|parsoon|narso|day after|yesterday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|somvar|mangalvar|budhvar|guruvar|shukravar|shanivar|ravivar|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b|\d{1,2}\s*(st|nd|rd|th)\b|\d{1,2}[\/.-]\d{1,2}|\d{4}-\d{2}-\d{2}|परसों/i;
+  function deleteScope(text) {
+    const t = String(text || ""); if (MANY_DAYS.test(t) || OTHER_DAY.test(t)) return null;
+    const td = DAY_TODAY.test(t), tm = DAY_TMRW.test(t);
+    if (td === tm) return null;
+    const today = istNow().date; return td ? today : addDays(today, 1);
+  }
+  function scopeDeletes(actions, userText) {
+    const day = deleteScope(userText); if (!day) return actions;
+    return actions.map((a) => {
+      if (a && a.type === "clearPlans") return Object.assign({}, a, { args: { dates: [day] } });
+      if (a && a.type === "deleteTasks" && a.args && a.args.date !== day) return Object.assign({}, a, { args: Object.assign({}, a.args, { date: day }) });
+      return a;
+    });
+  }
   function guard(actions0, userText) {
-    const actions = Array.isArray(actions0) ? anchorTimes(actions0, userText) : actions0;
+    let actions = Array.isArray(actions0) ? anchorTimes(actions0, userText) : actions0;
+    if (Array.isArray(actions)) actions = scopeDeletes(actions, userText);
     if (!Array.isArray(actions) || WHEN_RE.test(String(userText || ""))) return actions;
     let asked = actions.some((a) => a && a.type === "askClarification");
     const out = [];
@@ -605,8 +624,12 @@
       case "deleteTasks": { const r = action.resolved || { days: [] }, d = r.days[0] || { date: a.date, tasks: [] };
         return { icon: "✕", title: "Delete " + (d.tasks.length === 1 ? "task" : d.tasks.length + " tasks"), text: niceDate(d.date), plan: d.tasks.map((x) => niceTime(x.start) + " · " + x.title), sub: "Removed from this day's plan. You can undo right after.", danger: true }; }
       case "clearPlans": { const r = action.resolved || { days: [] }, n = r.days.length;
-        return { icon: "✕", title: "Clear " + (n === 1 ? "1 day" : n + " days"), text: r.daily ? "All upcoming days, including your daily plan" : r.days.map((x) => niceDate(x.date)).slice(0, 3).join(", ") + (n > 3 ? " and " + (n - 3) + " more" : ""),
-          plan: r.days.map((x) => niceDate(x.date) + ": " + (x.tasks.length ? x.tasks.map((t) => t.title).slice(0, 4).join(", ") + (x.tasks.length > 4 ? " +" + (x.tasks.length - 4) : "") : "already empty")),
+        const sig = (x) => x.tasks.map((t) => (t.start || "") + t.title).join("|"), list = (x) => x.tasks.length ? x.tasks.map((t) => t.title).slice(0, 4).join(", ") + (x.tasks.length > 4 ? " +" + (x.tasks.length - 4) : "") : "already empty";
+        const runs = []; r.days.forEach((x) => { const last = runs[runs.length - 1]; if (last && sig(last.first) === sig(x) && addDays(last.lastDate, 1) === x.date) { last.lastDate = x.date; last.n++; } else runs.push({ first: x, lastDate: x.date, n: 1 }); });
+        const rows = runs.map((g) => (g.n === 1 ? niceDate(g.first.date) : niceDate(g.first.date) + " → " + niceDate(g.lastDate) + " (" + g.n + " days, same tasks)") + ": " + list(g.first));
+        const span = n === 1 ? niceDate(r.days[0].date) : niceDate(r.days[0].date) + " → " + niceDate(r.days[n - 1].date);
+        return { icon: "✕", title: "Clear " + (n === 1 ? "1 day" : n + " days"), text: r.daily ? "All upcoming days, including your daily plan" : span,
+          plan: rows.length > 6 ? rows.slice(0, 5).concat(["…and " + (rows.length - 5) + " more"]) : rows,
           sub: (r.daily ? "Your daily plan (used on every day without its own plan) is deleted too. " : "") + "You can undo right after.", danger: true }; }
       default: return { icon: "", title: action.type, text: "" };
     }

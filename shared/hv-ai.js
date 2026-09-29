@@ -14,7 +14,7 @@
   const FU_TYPES = ["Email", "LinkedIn", "Call", "WhatsApp", "Other"];
   const PRIORITIES = ["Low", "Medium", "High"];
   const BLOCK_KINDS = ["apply", "prep", "outreach", "work", "meal", "rest", "free", "close"];
-  const ACTIONS = ["addJob", "updateJob", "moveStage", "deleteJob", "addFollowUp", "completeFollowUp", "addEvent", "buildDayPlan", "editDayPlan", "answer", "askClarification"];
+  const ACTIONS = ["addJob", "updateJob", "moveStage", "deleteJob", "addFollowUp", "completeFollowUp", "addEvent", "buildDayPlan", "editDayPlan", "deleteTasks", "clearPlans", "answer", "askClarification"];
   const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
   /* ---------------- dates (India time) ---------------- */
@@ -118,6 +118,15 @@
     { name: "editDayPlan", description: "Change the existing HV Reset plan in context.today_plan. Return the FULL new block list; keep block_id on blocks you keep.", parameters: S("object", "", { properties: {
       date: S("string", "YYYY-MM-DD."), blocks: S("array", "The full new list of blocks.", { items: BLOCK }),
     }, required: ["date", "blocks"] }) },
+    { name: "deleteTasks", description: "Delete one or more tasks from ONE day of the HV Reset plan (the user said delete/remove/hata do/cancel). Find them in context.upcoming_plans (each task has a block_id). The user sees exactly what will be deleted and confirms first.", parameters: S("object", "", { properties: {
+      date: S("string", "YYYY-MM-DD of the day."), block_ids: S("array", "block_id of each task to delete.", { items: S("string", "A block_id.") }),
+      titles: S("array", "Task titles as the user said them, if you don't have block_ids.", { items: S("string", "A title.") }),
+    }, required: ["date"] }) },
+    { name: "clearPlans", description: "Empty whole days of the HV Reset plan: one date, several dates, a range, or all upcoming days (today onward). The user sees every day and task that will go and confirms first. Never build an empty plan instead.", parameters: S("object", "", { properties: {
+      dates: S("array", "Specific days YYYY-MM-DD.", { items: S("string", "A date.") }), from: S("string", "Range start YYYY-MM-DD."), to: S("string", "Range end YYYY-MM-DD."),
+      all_upcoming: S("boolean", "true for 'all upcoming days / aage ke sab dates' (today onward)."),
+      include_daily_plan: S("boolean", "true only if the user also wants their every-day plan deleted (it fills every day that has no plan of its own)."),
+    } }) },
     { name: "answer", description: "Reply to the user in their language (Hinglish/Hindi/English), short. For questions, answer ONLY from context.stats and context lists. When you also propose actions, say what you are proposing, never that it is done.", parameters: S("object", "", { properties: {
       text: S("string", "The reply."),
     }, required: ["text"] }) },
@@ -136,6 +145,7 @@
     "Never invent a date or time. If the user wants an event (interview, call, deadline) but did not say when, call askClarification asking the date and time, and do not call addEvent. 'Is hafte' / 'this week' means applied_this_week (weeks start Monday); 'pichle 7 din' / 'last 7 days' means applied_last_7_days.",
     "'Applied mark karo' = moveStage to Applied (this auto-creates a follow-up). If the user also gives a follow-up time, add addFollowUp with in_days or due_date too.",
     "Questions like 'aaj kitne apply kiye' or 'pending follow-ups': answer from context.stats and context.followups_pending only; never guess numbers.",
+    "Deleting in HV Reset: to remove tasks use deleteTasks (one day); to empty whole days use clearPlans. Never send buildDayPlan or editDayPlan with no blocks. Nothing is deleted until the user confirms the card, so never say it is already deleted or cleared.",
     "Think before you act. If something is unclear or looks like a mistake (the same task twice, a time that could be AM or PM, a date that doesn't fit, a missing time for a timed task), ask ONE short question with answer instead of guessing. Never invent a date: use context.now for today, tomorrow and weekdays.",
     "If context.pending_question is present, you asked the user that question about the plan in context.pending_question.plan, and their message is most likely the answer: return that whole plan again (same date) with their answer applied, as buildDayPlan (or editDayPlan when changing today's plan).",
     "Day plans (HV Reset): plan only what the user asked for. If they name one or two tasks ('kal 8 baje study'), the plan has just those blocks: do not add breaks, meals or other tasks they did not ask for. Use the length they give; if none, 60 minutes. For a whole day ('poora din plan karo', a list of several tasks), follow these rules too: one block = one task. Start from context.now rounded up to the next 15 minutes unless a start is given. Keep work blocks at most 90 minutes with short breaks (kind rest) between them. Never skip a meal: include lunch around 13:30 and dinner around 20:30 when the plan covers those times. 'Free after 7' / 'shaam 7 ke baad free' means no work blocks after 19:00 (add a free block from 19:00; leftover time before that can stay free). Times the user gives are fixed: '2 se 3 outreach' means outreach exactly 14:00-15:00; never move a block the user timed, fit breaks and meals around it. Mark applying, interview prep and outreach as core. When editing today_plan: core blocks may shrink but never be removed, and meal blocks stay.",
@@ -148,7 +158,7 @@
   const APPS = {
     vault: { name: "HV Vault", actions: ["addJob", "updateJob", "moveStage", "deleteJob", "addFollowUp", "completeFollowUp", "addEvent", "answer", "askClarification"],
       rule: "This chat is inside HV Vault. Here you may only change HV Vault: jobs, follow-ups and calendar events. You cannot make or change day plans here: if asked, call only 'answer' saying that day plans are made in HV Reset (open HV Reset and ask HV AI there)." },
-    reset: { name: "HV Reset", actions: ["buildDayPlan", "editDayPlan", "answer", "askClarification"],
+    reset: { name: "HV Reset", actions: ["buildDayPlan", "editDayPlan", "deleteTasks", "clearPlans", "answer", "askClarification"],
       rule: "This chat is inside HV Reset. Here you may only make or change the day plan. You cannot add, change, move or delete jobs, follow-ups or calendar events here: if asked, call only 'answer' saying that this is done in HV Vault (open HV Vault and ask HV AI there). You may still answer questions about jobs and follow-ups from the context." },
   };
   const scopeOf = (app) => {
@@ -380,6 +390,10 @@
     if (["updateJob", "moveStage", "deleteJob"].indexOf(t) >= 0 && !hasRef(a)) errs.push("which job?");
     if (t === "addFollowUp" && !hasRef(a)) errs.push("which job?");
     if (t === "addFollowUp" && !(isDate(a.due_date) || (Number(a.in_days) >= 0 && Number(a.in_days) <= 365 && a.in_days !== undefined && a.in_days !== ""))) errs.push("follow-up needs a date or number of days");
+    if (t === "deleteTasks" && !((Array.isArray(a.block_ids) && a.block_ids.length) || (Array.isArray(a.titles) && a.titles.length))) errs.push("which tasks?");
+    if (t === "clearPlans" && !(a.all_upcoming === true || (Array.isArray(a.dates) && a.dates.length) || a.from)) errs.push("which days?");
+    ["from", "to"].forEach((k) => { if (a[k] && !isDate(a[k])) errs.push(k + " must be YYYY-MM-DD"); });
+    if (Array.isArray(a.dates)) a.dates.forEach((d) => { if (!isDate(d)) errs.push("dates must be YYYY-MM-DD"); });
     if (t === "completeFollowUp" && !str(a.followup_id) && !str(a.company) && !str(a.title)) errs.push("which follow-up?");
     ["due_date", "deadline", "date"].forEach((k) => { if (a[k] && !isDate(a[k])) errs.push(k + " must be YYYY-MM-DD"); });
     if (a.time && !isTime(a.time)) errs.push("time must be HH:MM");
@@ -588,6 +602,12 @@
       case "completeFollowUp": { const f = ((data && data.followups) || []).find((x) => x.id === a.followup_id); return { icon: "✓", title: "Follow-up done", text: f ? (f.title || "Follow-up") + " · " + companyName(data, f.company_id) : (a.title || a.company || "Follow-up"), sub: f && f.due_date ? "Was due " + niceDate(f.due_date) : "" }; }
       case "addEvent": return { icon: "📅", title: EVENT_LABEL[a.type] || "Event", text: a.title, sub: niceDate(a.date) + (a.time ? " · " + niceTime(a.time) : "") + (a.duration_min ? " · " + a.duration_min + " min" : "") + (job ? " · linked to " + jl : "") };
       case "buildDayPlan": case "editDayPlan": return { icon: "🗓", title: action.type === "buildDayPlan" ? "New day plan" : "Change day plan", text: niceDate(a.date) + " · " + (a.blocks || []).length + " blocks", plan: (a.blocks || []).map((b) => niceTime(b.start) + " · " + b.duration_min + " min · " + b.title + (b.core ? " ★" : "")), sub: (a.notes || []).join(" ") };
+      case "deleteTasks": { const r = action.resolved || { days: [] }, d = r.days[0] || { date: a.date, tasks: [] };
+        return { icon: "✕", title: "Delete " + (d.tasks.length === 1 ? "task" : d.tasks.length + " tasks"), text: niceDate(d.date), plan: d.tasks.map((x) => niceTime(x.start) + " · " + x.title), sub: "Removed from this day's plan. You can undo right after.", danger: true }; }
+      case "clearPlans": { const r = action.resolved || { days: [] }, n = r.days.length;
+        return { icon: "✕", title: "Clear " + (n === 1 ? "1 day" : n + " days"), text: r.daily ? "All upcoming days, including your daily plan" : r.days.map((x) => niceDate(x.date)).slice(0, 3).join(", ") + (n > 3 ? " and " + (n - 3) + " more" : ""),
+          plan: r.days.map((x) => niceDate(x.date) + ": " + (x.tasks.length ? x.tasks.map((t) => t.title).slice(0, 4).join(", ") + (x.tasks.length > 4 ? " +" + (x.tasks.length - 4) : "") : "already empty")),
+          sub: (r.daily ? "Your daily plan (used on every day without its own plan) is deleted too. " : "") + "You can undo right after.", danger: true }; }
       default: return { icon: "", title: action.type, text: "" };
     }
   }
@@ -651,7 +671,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
 .hvai-row{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .hvai button.b,.hvai a.b{border-radius:999px;border:1px solid var(--hvai-line);background:transparent;color:var(--hvai-ink);padding:7px 15px;font:inherit;font-size:14px;font-weight:700;cursor:pointer;min-height:38px;box-sizing:border-box}
 .hvai button.b.p,.hvai a.b.p{background:var(--hvai-grad);border-color:transparent;color:#fff;box-shadow:0 8px 18px -10px rgba(64,88,200,.9)}
-.hvai button.b.d{background:var(--hvai-danger);border-color:transparent;color:#fff}
+.hvai button.b.hvai-del{background:var(--hvai-danger);border-color:transparent;color:#fff}
 .hvai-opt{display:block;width:100%;text-align:left;margin-top:6px}
 .hvai-blocks{display:flex;flex-direction:column;gap:8px;margin-top:6px}
 .hvai-blk{border:1px solid var(--hvai-line);border-left:4px solid var(--hvai-accent);border-radius:14px;padding:8px 10px;background:var(--hvai-field)}
@@ -890,7 +910,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
         if (d.danger) el.className = "hvai-card danger";
         el.innerHTML = '<div class="hvai-ct">' + esc(d.icon + " " + d.title) + '</div><div class="hvai-cx">' + esc(d.text) + "</div>" + (d.sub ? '<div class="hvai-cs">' + esc(d.sub) + "</div>" : "") +
           (d.plan ? '<ol class="hvai-plan">' + d.plan.map((x) => "<li>" + esc(x) + "</li>").join("") + "</ol>" : "") +
-          '<div class="hvai-row"><button class="b ' + (d.danger ? "d" : "p") + '" data-a="confirm">' + (d.danger ? "Delete" : "Confirm") + '</button>' + ((EDIT_FIELDS[r.action.type] || []).length ? '<button class="b" data-a="edit">Edit</button>' : "") + '<button class="b" data-a="cancel">Cancel</button></div>';
+          '<div class="hvai-row"><button class="b ' + (d.danger ? "hvai-del" : "p") + '" data-a="confirm">' + (d.danger ? "Delete" : "Confirm") + '</button>' + ((EDIT_FIELDS[r.action.type] || []).length ? '<button class="b" data-a="edit">Edit</button>' : "") + '<button class="b" data-a="cancel">Cancel</button></div>';
       }
       el.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", () => act(item, batch, b.dataset.a)));
     }
@@ -955,6 +975,15 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       meta = meta || {};
       action = normalize(action);
       const data = h.getData ? h.getData() : null;
+      if ((action.type === "buildDayPlan" || action.type === "editDayPlan") && !(action.args && Array.isArray(action.args.blocks) && action.args.blocks.length))
+        return { status: "invalid", action, message: "A plan needs at least one task. To remove tasks or empty a day, just say what to delete and I'll show it to you first." };
+      if (action.type === "deleteTasks" || action.type === "clearPlans") {
+        const v = validate(action);
+        if (!v.ok) return { status: "invalid", action, message: action.type === "deleteTasks" ? "Which task should I delete, and on which day?" : "Which days should I clear?" };
+        const r = h.previewDelete ? h.previewDelete(action) : { ok: false, message: "Deleting isn't available here." };
+        if (!r.ok) return { status: "invalid", action, message: r.message };
+        return { status: "ready", action: Object.assign({}, action, { resolved: r }) };
+      }
       if ((action.type === "buildDayPlan" || action.type === "editDayPlan") && validate(action).ok) {
         const today = istNow().date;
         if (action.args.date && action.args.date < today) return { status: "invalid", action, message: niceDate(action.args.date) + " has already passed. Which day should I plan: today or tomorrow?" };
@@ -1059,14 +1088,18 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (away.length) say("ai", "Ye " + away[0] + " ka kaam hai. " + away[0] + " kholo aur wahan HV AI se bolo. Yahan kuch change nahi kiya.", false);
       const proposes = acts.some((a) => a.type !== "answer" && a.type !== "askClarification");
       const tidyReply = (t) => proposes && /(kar diy|ho gay|set kar|add kar diy|bana diy|update kar diy|\bdone\b|\bupdated\b|\badded\b)/i.test(t) ? (host.app === "reset" ? "Ye raha plan. Theek lage to Confirm karo." : "Ye raha change. Theek lage to Confirm karo.") : t;
-      if (!away.length) acts.filter((a) => a.type === "answer" && a.args && str(a.args.text)).forEach((a) => say("ai", tidyReply(a.args.text)));   // its reply would describe the other-app change
+      const prepared = acts.filter((a) => a.type !== "answer" && a.type !== "askClarification").map((a) => ({ a, r: prepare(a, host) }));
+      const usable = prepared.filter((x) => ["ready", "choose", "handoff"].indexOf(x.r.status) >= 0).length;
+      if (!away.length && !(proposes && !usable)) acts.filter((a) => a.type === "answer" && a.args && str(a.args.text)).forEach((a) => say("ai", tidyReply(a.args.text)));   // no "here's the plan" when every card failed
+      const failed = prepared.filter((x) => x.r.status === "invalid" || x.r.status === "notfound");
+      if (failed.length) { history.push({ role: "ai", text: "[NOT DONE: " + failed.map((x) => x.a.type + " (" + (x.r.message || "failed") + ")").join("; ") + ". Nothing was changed.]" }); save(); }   // its reply would describe the other-app change
       acts.filter((a) => a.type === "askClarification" && a.args && str(a.args.question)).forEach((a) => {
         say("ai", a.args.question);
         const opts = Array.isArray(a.args.options) ? a.args.options.filter(str).slice(0, 5) : [];
         if (opts.length) { const row = add("hvai-row", opts.map((o) => '<button class="b">' + esc(o) + "</button>").join("")); row.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { row.remove(); run(b.textContent); })); }
       });
       if (pq && acts.some((a) => a.type === "buildDayPlan" || a.type === "editDayPlan")) { pq.state = "cancelled"; paint(pq, pq.batch || { items: [pq] }); }   // the new plan replaces the one that was waiting
-      acts.filter((a) => a.type !== "answer" && a.type !== "askClarification").forEach((a) => cardFor(prepare(a, host), batch));
+      prepared.forEach((x) => cardFor(x.r, batch));
       if (!acts.length && !away.length) say("ai", "Samjha nahi. Thoda aur batao?", false);
       footer(batch);
     }

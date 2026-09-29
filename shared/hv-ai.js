@@ -705,6 +705,12 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
 .hvai-send:disabled{opacity:.4;cursor:default}
 .hvai-hint{font-size:12px;color:var(--hvai-muted);text-align:center;margin-top:6px}
 .hvai-typing{align-self:flex-start;color:var(--hvai-muted);font-size:13.5px;padding:2px 6px}
+.hvai-recbar{display:flex;align-items:center;justify-content:center;gap:8px;font-size:12px;color:var(--hvai-muted);margin-top:6px}
+.hvai-recbar[hidden],.hvai-hint[hidden]{display:none}
+.hvai-recdot{width:8px;height:8px;border-radius:50%;background:var(--hvai-danger);animation:hvaiBlink 1s steps(2,start) infinite}
+.hvai-rect{font-variant-numeric:tabular-nums;color:var(--hvai-ink);font-weight:600}
+.hvai-recx{border:0;background:var(--hvai-card);color:var(--hvai-ink);width:24px;height:24px;border-radius:50%;padding:0;cursor:pointer;font-size:12px;line-height:24px}
+@keyframes hvaiBlink{50%{opacity:.25}}
 @keyframes hvaiPulse{50%{box-shadow:0 0 0 8px rgba(196,78,78,.2)}}
 @media(max-width:640px){.hvai{right:0;left:0;bottom:0;width:100%;height:88vh;height:88dvh;border-radius:26px 26px 0 0;border-bottom:0}}
 `;
@@ -773,7 +779,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     const headLogo = String(host.logoSVG || "").replace(/id="([^"]+)"/g, 'id="$1-h"').replace(/url\(#([^)]+)\)/g, "url(#$1-h)");   // own gradient ids: the button's copy is hidden while the panel is open
     panel.innerHTML = '<div class="hvai-head">' + headLogo + '<div class="hvai-ttl"><b>HV AI</b><small>Hindi · English · Hinglish</small></div><button class="hvai-x" aria-label="Close HV AI">' + ICON_X + '</button></div>' +
       '<div class="hvai-log" role="log" aria-live="polite"></div>' +
-      '<div class="hvai-bar"><div class="hvai-box"><textarea class="hvai-in" rows="1" placeholder="Bolo ya likho…"></textarea><button class="hvai-mic" aria-label="Hold to talk" title="Hold to talk">' + ICON_MIC + '</button><button class="hvai-send" aria-label="Send">' + ICON_SEND + '</button></div><div class="hvai-hint">Hold the mic to talk · Enter to send</div></div>';
+      '<div class="hvai-bar"><div class="hvai-box"><textarea class="hvai-in" rows="1" placeholder="Bolo ya likho…"></textarea><button class="hvai-mic" aria-label="Tap to talk" title="Tap to talk">' + ICON_MIC + '</button><button class="hvai-send" aria-label="Send">' + ICON_SEND + '</button></div><div class="hvai-hint">Tap the mic to talk · Enter to send</div><div class="hvai-recbar" hidden><span class="hvai-recdot"></span><span class="hvai-rect">0:00</span><span class="hvai-recmsg">Listening… tap the mic to stop</span><button type="button" class="hvai-recx" aria-label="Cancel recording" title="Cancel">✕</button></div></div>';
     if (host.fabCSS) { const x = document.createElement("style"); x.setAttribute("data-hvai-fab", ""); x.textContent = host.fabCSS; document.head.appendChild(x); }   // e.g. lift it above a sticky button bar
     document.body.appendChild(fab); document.body.appendChild(panel);
     const log = panel.querySelector(".hvai-log"), input = panel.querySelector(".hvai-in"), mic = panel.querySelector(".hvai-mic"), send = panel.querySelector(".hvai-send");
@@ -829,7 +835,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { const x = SUGG[+b.dataset.i]; box.remove();
         if (x[2]) run(x[1]); else { input.value = x[1]; grow(); input.focus(); const k = input.value.indexOf("___"); if (k >= 0) input.setSelectionRange(k, k + 3); } }));
     }
-    function close() { panel.hidden = true; fab.hidden = false; }
+    function close() { panel.hidden = true; fab.hidden = false; if (typeof stopRec === "function" && (live || pending)) { if (pending) cancelled = true; stopRec(true); } }
     fab.addEventListener("click", open); panel.querySelector(".hvai-x").addEventListener("click", close);
     const offAcc = CL() ? CL().onChange(useAccount) : null;
     if (histUid) pullHist();
@@ -1104,52 +1110,85 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       footer(batch);
     }
 
-    /* ---- push-to-talk ---- */
-    let rec = null, chunks = [], recStart = 0, speech = null;
+    /* ---- voice: tap to start, tap again to stop (holding also works: let go to stop) ---- */
+    let rec = null, chunks = [], recStart = 0, speech = null, live = false, pending = false, pressAt = 0, pressing = false, holdMode = false, cancelled = false, tick = null, cap = null;
     const canRecord = () => !!(root.MediaRecorder && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
     const SR = root.SpeechRecognition || root.webkitSpeechRecognition;
-    async function micDown(e) {
-      e.preventDefault(); if (busy) return;
+    const recbar = panel.querySelector(".hvai-recbar"), hint = panel.querySelector(".hvai-hint"), recT = panel.querySelector(".hvai-rect");
+    const MAX_REC = 120000;   // stop by itself after 2 minutes
+    function showRec(on) {
+      mic.classList.toggle("rec", on); recbar.hidden = !on; hint.hidden = on;
+      mic.setAttribute("aria-label", on ? "Stop and use what I said" : "Tap to talk"); mic.title = mic.getAttribute("aria-label");
+      clearInterval(tick); clearTimeout(cap);
+      if (on) {
+        const t0 = Date.now(), paint = () => { const s = Math.floor((Date.now() - t0) / 1000); recT.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+        paint(); tick = setInterval(paint, 250); cap = setTimeout(() => stopRec(false), MAX_REC);
+      }
+    }
+    function stopRec(cancel) {
+      cancelled = !!cancel; live = false; showRec(false);
+      if (rec && rec.state === "recording") rec.stop();
+      if (speech) { try { cancel ? speech.abort() : speech.stop(); } catch (err) {} speech = null; }
+    }
+    async function startRec() {
       const c = cfg();
       if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
+      cancelled = false;
       if ((c.provider === "gemini" || c.provider === "builtin") && canRecord()) {   // Gemini hears the audio itself
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          chunks = []; rec = new MediaRecorder(stream); rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
-          rec.onstop = async () => {
-            stream.getTracks().forEach((t) => t.stop());
-            if (Date.now() - recStart < 500) { say("sys", "Hold the mic while you speak.", false); return; }
-            const note = add("hvai-typing", "Listening back…");
-            try {
-              const wav = await toWavB64(new Blob(chunks, { type: rec.mimeType || "audio/webm" }));
-              const t = await transcribe(c, wav);
-              if (t.error) say("sys", t.error, false);
-              else if (!t.text) say("sys", "Couldn't hear anything. Try again.", false);
-              else { input.value = t.text; input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); }
-            } catch (err) { say("sys", "Couldn't process the recording.", false); }
-            finally { note.remove(); }
-          };
-          rec.start(); recStart = Date.now(); mic.classList.add("rec");
-        } catch (err) { say("sys", "Microphone permission is needed for voice.", false); }
+        pending = true;
+        let stream;
+        try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+        catch (err) { pending = false; say("sys", "Microphone permission is needed for voice.", false); return; }
+        pending = false;
+        if (cancelled || dead) { stream.getTracks().forEach((t) => t.stop()); return; }   // stopped before the mic was ready
+        chunks = []; rec = new MediaRecorder(stream); rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+        const r = rec;
+        r.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop());
+          if (cancelled) return;
+          if (Date.now() - recStart < 600) { say("sys", "That was too short. Tap the mic, speak, then tap it again.", false); return; }
+          const note = add("hvai-typing", "Listening back…");
+          try {
+            const wav = await toWavB64(new Blob(chunks, { type: r.mimeType || "audio/webm" }));
+            const t = await transcribe(c, wav);
+            if (t.error) say("sys", t.error, false);
+            else if (!t.text) say("sys", "Couldn't hear anything. Try again.", false);
+            else { input.value = t.text; input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); }
+          } catch (err) { say("sys", "Couldn't process the recording.", false); }
+          finally { note.remove(); }
+        };
+        r.start(); recStart = Date.now(); live = true; showRec(true);
+        if (holdMode && !pressing) stopRec(false);   // held and already let go while the mic was starting
         return;
       }
       if (SR) {
         speech = new SR(); speech.lang = "en-IN"; speech.interimResults = true; speech.continuous = true;
         let finalText = "";
         speech.onresult = (ev) => { let s = ""; for (let i = 0; i < ev.results.length; i++) s += ev.results[i][0].transcript + " "; finalText = s.trim(); input.value = finalText; };
-        speech.onend = () => { mic.classList.remove("rec"); if (finalText) { input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); } };
-        speech.onerror = () => { mic.classList.remove("rec"); };
-        try { speech.start(); mic.classList.add("rec"); } catch (err) {}
+        speech.onend = () => { live = false; showRec(false); speech = null; if (finalText && !cancelled) { input.dispatchEvent(new Event("input")); input.focus(); say("sys", "Check the text, fix anything, then tap Send", false); } };
+        speech.onerror = () => { live = false; showRec(false); };
+        try { speech.start(); live = true; showRec(true); } catch (err) {}
         return;
       }
       say("sys", "Voice isn't supported in this browser. Type instead.", false);
     }
+    function micDown(e) {
+      e.preventDefault();
+      if (live || pending) { pressing = false; if (pending) cancelled = true; else stopRec(false); return; }   // second tap: stop
+      if (busy) return;
+      pressing = true; holdMode = false; pressAt = Date.now();
+      try { mic.setPointerCapture(e.pointerId); } catch (err) {}
+      startRec();
+    }
     function micUp(e) {
       e.preventDefault();
-      if (rec && rec.state === "recording") { rec.stop(); mic.classList.remove("rec"); }
-      if (speech) { try { speech.stop(); } catch (err) {} speech = null; }
+      if (!pressing) return;
+      pressing = false;
+      if (Date.now() - pressAt < 400) return;   // a quick tap: keep listening until the next tap
+      holdMode = true; if (live) stopRec(false);   // held down: letting go stops it
     }
-    mic.addEventListener("pointerdown", micDown); mic.addEventListener("pointerup", micUp); mic.addEventListener("pointerleave", micUp); mic.addEventListener("pointercancel", micUp);
+    mic.addEventListener("pointerdown", micDown); mic.addEventListener("pointerup", micUp); mic.addEventListener("pointercancel", micUp);
+    panel.querySelector(".hvai-recx").addEventListener("click", () => { if (pending) cancelled = true; stopRec(true); say("sys", "Recording cancelled.", false); });
     mic.addEventListener("contextmenu", (e) => e.preventDefault());
 
     function showActions(actions, note) {
@@ -1158,7 +1197,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     }
     // destroy: the host app is going away (HV Vault remounts after sign-in), so a new mount can take over
     const destroy = () => {
-      dead = true; if (offAcc) offAcc(); clearTimeout(histTimer);
+      dead = true; if (offAcc) offAcc(); clearTimeout(histTimer); if (live || pending) { cancelled = true; stopRec(true); }
       const guestChat = carry || (CL() && !histUid ? history : null);
       carryOver = guestChat && guestChat.length ? guestChat.slice() : null; [fab, panel, st].forEach((el) => el && el.remove()); document.querySelectorAll("style[data-hvai-fab]").forEach((el) => el.remove()); };
     return { open, close, run, showActions, destroy, setVisible: (v) => { if (!v) { panel.hidden = true; fab.hidden = true; } else if (panel.hidden) fab.hidden = false; }, refreshTheme: theme };

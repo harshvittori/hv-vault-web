@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // The HV Test admin: the Firebase account ID shown on hv-tests/admin after signing in
+    function isAdmin() {
+      return request.auth != null && request.auth.uid == 'vbqJe9D5IAYSBytSzM850motekm2';
+    }
+    // HV Vault: a signed-in user can read/write only their own data under users/{uid}/
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Old Harsh Reset sync (before Google accounts). Nothing writes here any more: plans now live
+    // under users/{uid}/reset. Kept read-only so old data can still be copied into an account.
+    // A doc can only be opened by its long private ID (no listing), and the owner's old shared
+    // plan, whose ID is in the public page code, can only be opened by the admin.
+    match /reset/{syncId} {
+      allow get: if syncId.size() >= 32
+        && (syncId != 'ffe5a55d2c34804c295003af2d6f0a7974d5fcee' || isAdmin());
+      allow list, write: if false;
+    }
+    // HV Test scorecards: anyone can check one by its ID; created once, never changed. Only the admin can list or delete.
+    match /scorecards/{id} {
+      allow get: if true;
+      allow list, delete: if isAdmin();
+      allow update: if false;
+      allow create: if id.matches('HVT-[A-Z]{2}-[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}')
+        && request.resource.data.keys().hasOnly(['v','id','name','test','testTitle','category','completedAt','score','level','answered','total','skills','strengths','focus'])
+        && request.resource.data.v == 1
+        && request.resource.data.id == id
+        && request.resource.data.name is string && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 60
+        && request.resource.data.test is string && request.resource.data.test.size() <= 60
+        && request.resource.data.testTitle is string && request.resource.data.testTitle.size() <= 80
+        && request.resource.data.category is string && request.resource.data.category.size() <= 60
+        && request.resource.data.level is string && request.resource.data.level.size() <= 40
+        && request.resource.data.completedAt is timestamp
+        && request.resource.data.completedAt > request.time - duration.value(2, 'd')
+        && request.resource.data.completedAt < request.time + duration.value(10, 'm')
+        && request.resource.data.score is int && request.resource.data.score >= 0 && request.resource.data.score <= 100
+        && request.resource.data.answered is int && request.resource.data.total is int
+        && request.resource.data.answered >= 0 && request.resource.data.answered <= request.resource.data.total && request.resource.data.total <= 200
+        && request.resource.data.skills is list && request.resource.data.skills.size() <= 20
+        && request.resource.data.strengths is list && request.resource.data.strengths.size() <= 5
+        && request.resource.data.focus is list && request.resource.data.focus.size() <= 5;
+    }
+    // HV World live settings (maintenance, banner, home page switches): anyone can read, only the admin can change
+    match /config/{doc} {
+      allow get: if doc == 'site';
+      allow list: if false;
+      allow write: if isAdmin() && doc == 'site'
+        && request.resource.data.keys().hasOnly(['json', 'updatedAt', 'by'])
+        && request.resource.data.json is string && request.resource.data.json.size() < 100000;
+    }
+    // HV Test anonymous counter: one number per test per day (+1 when someone finishes a test). Only the admin can read it.
+    match /stats/{key} {
+      allow read: if isAdmin();
+      allow create: if key.matches('[a-z0-9-]{1,60}_20[0-9]{2}-[01][0-9]-[0-3][0-9]')
+        && request.resource.data.keys().hasOnly(['completed']) && request.resource.data.completed == 1;
+      allow update: if request.resource.data.keys().hasOnly(['completed'])
+        && request.resource.data.completed == resource.data.completed + 1;
+    }
+  }
+}

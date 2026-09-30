@@ -737,7 +737,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
 @keyframes hvaiPulse{50%{box-shadow:0 0 0 8px rgba(196,78,78,.2)}}
 @media(max-width:640px){.hvai{right:0;left:0;bottom:0;width:100%;height:88vh;height:88dvh;border-radius:26px 26px 0 0;border-bottom:0}}
 `;
-  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const EDIT_FIELDS = {
     addJob: ["role", "company", "link", "source", "location", "stage", "notes"], updateJob: ["new_title", "link", "source", "location", "priority", "deadline", "notes"],
     moveStage: ["stage"], deleteJob: [], addFollowUp: ["title", "due_date", "type", "notes"], completeFollowUp: [],

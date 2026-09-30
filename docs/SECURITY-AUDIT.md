@@ -56,7 +56,7 @@ Checked and found **fine**:
 
 ## 3. New security controls
 
-- An emulator test suite for the rules: `firebase/test/rules.test.mjs`, 17 tests [VERIFIED].
+- An emulator test suite for the rules: `firebase/test/rules.test.mjs`, 19 tests [VERIFIED].
 - Dependabot for npm and GitHub Actions: `hv-vault-web`, and Actions for `hv-tests` [NOT VERIFIED: GitHub starts it after merge].
 
 ## 4. Firebase Authentication changes
@@ -104,7 +104,7 @@ Storage: not used, so nothing to secure.
 
 | Test | Result |
 |---|---|
-| Firestore rules, emulator: 17 tests | **17/17 pass**. They cover owner vs. other users, signed-out users, deletes, protected fields, bad types, admin claims, listing, unknown collections, REST with another user's token or a garbage token, and valid app writes (Vault/Reset sync, cross-app inbox, scorecard, +1 counter, admin config publish). |
+| Firestore rules, emulator: 19 tests | **19/19 pass**. They cover owner vs. other users, signed-out users, deletes, protected fields, bad types, admin claims, listing, unknown collections, REST with another user's token or a garbage token, and valid app writes (Vault/Reset sync, cross-app inbox, scorecard, +1 counter, admin config publish). |
 | The same tests against the **current live rules** | 14/17 pass. The 3 failures are exactly V1, V2 and V3, which shows the tests catch them. |
 | HV Vault `npm run build` | pass |
 | `npm audit --omit=dev` | 0 vulnerabilities |
@@ -112,6 +112,9 @@ Storage: not used, so nothing to secure.
 | Admin pages framed by another origin | page hidden (`display: none`) |
 | HV Reset page load after the changes (clock set to after launch) | loads, no page errors |
 | Git history secret scan (4 repos, all commits) | only the public Firebase web key |
+| Scorecard consistency rules: 300 simulated real results (same maths as the test, including edge cases and the timing adjustment) | **all accepted** |
+| Scorecard consistency rules: 16 kinds of made-up or inconsistent record | **all refused** |
+| Real Maturity Assessment page (Playwright, clicked through like a user), real `scorecard.js` save, emulator | **18/18 scorecards issued** |
 
 Not tested here: Google's token-signature checks (Firebase does these on the live project), and a live Google sign-in.
 
@@ -137,7 +140,16 @@ Not tested here: Google's token-signature checks (Firebase does these on the liv
 
 ## 11. Remaining risks and limits
 
-- HV Test scores are calculated in the browser. Someone can create a scorecard with a made-up score through the API. The shape and size are limited; App Check enforcement would raise the bar. This is a known design limit.
+- HV Test scores are calculated in the browser.
+  - **Since 30 Sep:** the rules also check that a scorecard is consistent with what the Maturity Assessment really produces:
+    - Exact test, 28–30 questions, all answered.
+    - The level matches the score.
+    - The 10 dimensions are in order, each 0–10.
+    - The overall score is in line with the dimensions.
+    - Valid strengths and focus areas, with no overlap.
+  - Random or inconsistent fake records are refused.
+  - A carefully built consistent fake is still possible. Full protection needs server-side scoring (Cloud Function, Blaze plan).
+  - These are self-assessments, so honest answers can't be enforced by any system.
 - The stats counter can be inflated with repeated +1 calls. It is admin-only, anonymous and low impact.
 - Without Firestore App Check enforcement, the rules are the only barrier. They are tested.
 - `users/{uid}` documents are owner-only but not shape-validated. A user can only fill their own space, up to Firestore's 1 MB per-document limit.

@@ -40,8 +40,39 @@ service cloud.firestore {
         && request.resource.data.answered >= 0 && request.resource.data.answered <= request.resource.data.total && request.resource.data.total <= 200
         && request.resource.data.skills is list && request.resource.data.skills.size() <= 20
         && request.resource.data.strengths is list && request.resource.data.strengths.size() <= 5
-        && request.resource.data.focus is list && request.resource.data.focus.size() <= 5;
+        && request.resource.data.focus is list && request.resource.data.focus.size() <= 5
+        && maturityCard(request.resource.data);
     }
+    // Consistency checks for the Maturity Assessment (the only test that issues scorecards). A record
+    // must look like one the test really produces: 28-30 questions, all answered; the level matching the
+    // score band; the 10 dimensions in order, each 0-10; an overall score in line with them (the test may
+    // take up to 5 points off for answer timing); 3 strengths and 3 focus areas from those dimensions.
+    // A new test that issues scorecards needs its own check here.
+    function skillOk(s, name) {
+      return s is map && s.keys().hasOnly(['name','score']) && s.name == name && s.score is int && s.score >= 0 && s.score <= 10;
+    }
+    function levelOk(score, level) {
+      return (score <= 40 && level == 'Developing') || (score > 40 && score <= 65 && level == 'Emerging')
+        || (score > 65 && score <= 85 && level == 'Grounded') || (score > 85 && level == 'Highly Consistent');
+    }
+    function maturitySkills(k, dims) {
+      return k.size() == 10
+        && skillOk(k[0], dims[0]) && skillOk(k[1], dims[1]) && skillOk(k[2], dims[2]) && skillOk(k[3], dims[3]) && skillOk(k[4], dims[4])
+        && skillOk(k[5], dims[5]) && skillOk(k[6], dims[6]) && skillOk(k[7], dims[7]) && skillOk(k[8], dims[8]) && skillOk(k[9], dims[9]);
+    }
+    function maturityCard(d) {
+      let dims = ['Emotional Control','Accountability','Self-Awareness','Handling Conflict','Relationships',
+                  'Decision-Making','Patience','Empathy','Responsibility','Long-Term Thinking'];
+      let k = d.skills;
+      return d.id.matches('HVT-MA-.*') && d.test == 'maturity-assessment' && d.testTitle == 'Maturity Assessment' && d.category == 'Personal Growth'
+        && d.total >= 28 && d.total <= 30 && d.answered == d.total
+        && levelOk(d.score, d.level)
+        && maturitySkills(k, dims)
+        && sumOk(d.score, k[0].score + k[1].score + k[2].score + k[3].score + k[4].score + k[5].score + k[6].score + k[7].score + k[8].score + k[9].score)
+        && d.strengths.size() == 3 && d.focus.size() == 3
+        && d.strengths.hasOnly(dims) && d.focus.hasOnly(dims) && !d.strengths.hasAny(d.focus);
+    }
+    function sumOk(score, sum) { return score >= sum - 11 && score <= sum + 6; }
     // HV World live settings (maintenance, banner, home page switches): anyone can read, only the admin can change
     match /config/{doc} {
       allow get: if doc == 'site';

@@ -94,11 +94,33 @@ Storage: not used, so nothing to secure.
 
 ## 8. Backend and App Check
 
-- No backend exists. App Check is already active for AI Logic and scorecards.
-- **Not enforced on Firestore, on purpose.**
-  - `status.js` (maintenance settings on every page), the HV World admin page and the Reset legacy read don't send App Check tokens yet.
-  - Enforcing now would break maintenance mode and the admin page.
-  - [FUTURE] add App Check to those three, watch the App Check metrics for 1–2 weeks, then enforce.
+- No backend exists.
+- **Since 30 Sep, every part of the site that talks to Firestore sends an App Check token:**
+  - HV Vault and HV Reset (HVCloud).
+  - HV Test scorecards and the HV Test admin (HVScorecard).
+  - HV World admin page (new).
+  - `status.js` on every page (new).
+  - The HV Reset legacy read (new).
+- **How `status.js` behaves:**
+  - It first sends a token saved from an earlier page, if it has one.
+  - Only when Firestore refuses the request does it get a token and retry.
+  - It reuses the page's own Firebase (HV Vault, HV Reset, HV Test) and never loads a second copy.
+  - It loads App Check itself only on pages with no Firebase at all.
+  - Before enforcement nothing changes: no extra scripts, no token.
+- Browser test with a stand-in Firebase and Firestore, pages served under the live domain: 16/16 checks pass, both before and after enforcement [VERIFIED with stand-ins].
+  - Real reCAPTCHA tokens only work on the live domain, so the real flow is [NOT VERIFIED] until it runs there.
+- **Turning on enforcement** [MANUAL]:
+  1. Wait until these changes are live, plus 1–2 days.
+  2. Firebase console → App Check → APIs → Cloud Firestore: check the request metrics.
+     - "Verified" should be most of the traffic.
+     - "Unverified: invalid requests" should be about 0.
+     - "Outdated client" requests are the first `status.js` call on each page before it has a token; they are expected.
+  3. Click **Enforce**. It takes effect within about 15 minutes.
+  4. Check HV World maintenance/banner, HV Vault sync, HV Reset, an HV Test scorecard and verify page, and both admin pages.
+  5. If anything breaks: App Check → Cloud Firestore → **Unenforce**.
+- **Limits:**
+  - After enforcement, a visitor whose browser blocks reCAPTCHA (some ad blockers or privacy settings) can't reach Firestore. For them, sync, scorecards and live settings stop working; the rest of the site still works.
+  - reCAPTCHA Enterprise has a free monthly quota (10,000 assessments at the time of writing). Tokens are cached for about an hour per browser. Watch usage in Google Cloud → Security → reCAPTCHA.
 
 ## 9. Tests performed (actual results)
 

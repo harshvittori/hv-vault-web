@@ -20,7 +20,7 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run build
       - run: cp firebase-config.js dist/
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
   deploy:

@@ -219,3 +219,29 @@ test("scorecards: made-up or inconsistent records are refused", async () => {
   // an MA record under another test's ID code
   await assertFails(setDoc(doc(anon(), "scorecards/HVT-XX-2345-6789"), card("HVT-XX-2345-6789")));
 });
+
+/* ---------- analytics: anonymous counters ---------- */
+test("analytics: anyone can add +1 counts to well-named docs; only the admin reads", async () => {
+  await assertSucceeds(setDoc(doc(anon(), "analytics/world_d_2026-10-01"), { pv: increment(1), ch_linkedin: increment(1) }, { merge: true }));
+  await assertSucceeds(setDoc(doc(anon(), "analytics/world_d_2026-10-01"), { pv: increment(1) }, { merge: true }));
+  await assertSucceeds(setDoc(doc(anon(), "analytics/test_w_2026-W40"), { wau: increment(1) }, { merge: true }));
+  await assertSucceeds(setDoc(doc(anon(), "analytics/vault_m_2026-10"), { mau: increment(1) }, { merge: true }));
+  await assertSucceeds(setDoc(doc(anon(), "analytics/reset_c_2026-10-01"), { n: increment(1) }, { merge: true }));
+  await assertFails(getDoc(doc(anon(), "analytics/world_d_2026-10-01")));
+  await assertFails(getDoc(doc(as("bob"), "analytics/world_d_2026-10-01")));
+  await assertFails(getDocs(collection(anon(), "analytics")));
+  await assertSucceeds(getDoc(doc(as(ADMIN), "analytics/world_d_2026-10-01")));
+  await assertSucceeds(getDocs(collection(as(ADMIN), "analytics")));
+});
+test("analytics: bad doc names, oversized writes and deletes are refused", async () => {
+  await assertFails(setDoc(doc(anon(), "analytics/other_d_2026-10-01"), { pv: increment(1) }, { merge: true }));
+  await assertFails(setDoc(doc(anon(), "analytics/world_x_2026-10-01"), { pv: increment(1) }, { merge: true }));
+  await assertFails(setDoc(doc(anon(), "analytics/anything"), { pv: 1 }));
+  const big = {}; for (let i = 0; i < 61; i++) big["f" + i] = increment(1);
+  await assertFails(setDoc(doc(anon(), "analytics/world_d_2026-10-02"), big, { merge: true }));
+  await assertSucceeds(setDoc(doc(anon(), "analytics/world_d_2026-10-03"), { pv: increment(1) }, { merge: true }));
+  const many = {}; for (let i = 0; i < 41; i++) many["g" + i] = increment(1);
+  await assertFails(setDoc(doc(anon(), "analytics/world_d_2026-10-03"), many, { merge: true }));
+  await assertFails(deleteDoc(doc(anon(), "analytics/world_d_2026-10-03")));
+  await assertFails(deleteDoc(doc(as(ADMIN), "analytics/world_d_2026-10-03")));
+});

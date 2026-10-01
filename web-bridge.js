@@ -113,6 +113,7 @@ if (typeof window !== "undefined" && !window.storage) {
           else {
             const got = await C().getValue(docPath(k)); if (!got) continue;
             await idbPut(k, got.value); meta.keys[k] = { t: r.t, h: hash(got.value), p: r.p || 0 };
+            if (k === MAIN) hvaPrev = hvaSum(got.value);              // came from another device: not a local action
           }
           changed++; if (k === MAIN) main = true;
         }
@@ -131,6 +132,7 @@ if (typeof window !== "undefined" && !window.storage) {
     const remote = await getManifest();
     const rMain = remote[MAIN] && !remote[MAIN].del ? await C().getValue(docPath(MAIN)) : null;
     const remoteHas = !!(rMain && contentOf(rMain.value));
+    if (window.__hvaJustSignedIn) { window.__hvaJustSignedIn = false; try { window.hva && window.hva("event", remoteHas ? "sign_in" : "signup"); } catch (e) {} }
     const localMain = await idbGet(MAIN);
     const localHas = !!(localMain && contentOf(localMain));
     // A device with nothing of its own always takes the account's data. Only a device with
@@ -231,14 +233,42 @@ if (typeof window !== "undefined" && !window.storage) {
     connect(u);
   });
 
+  /* Anonymous usage counts (HV analytics, /a.js). Events come from comparing simple counts before and after each
+     save (number of jobs, jobs per stage, follow-ups, events). No job titles, companies, notes or files are ever sent. */
+  let hvaPrev = null;
+  const hvaSum = (v) => {
+    try {
+      const d = JSON.parse(v), jobs = d.jobs || [], by = {};
+      jobs.forEach((j) => { const st = String(j.status || "none"); by[st] = (by[st] || 0) + 1; });
+      const fu = d.followups || [];
+      return { j: jobs.length, by, f: fu.length, fd: fu.filter((x) => x && x.status === "Done").length, e: (d.calendarEvents || []).length, c: (d.companies || []).length, r: (d.resumes || []).length };
+    } catch (e) { return null; }
+  };
+  const hvaDiff = (v) => {
+    try {
+      const n = hvaSum(v); if (!n) return; const o = hvaPrev; hvaPrev = n;
+      if (!o || !window.hva) return;
+      const t = (ev, opt) => window.hva("event", ev, opt);
+      const slug = (x) => String(x).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 24);
+      for (let i = 0; i < Math.min(5, n.j - o.j); i++) t("job_added");
+      if (n.j > o.j) { t("first_job", { first: true }); t("activation", { first: true }); }
+      if (n.j < o.j) t("job_deleted");
+      Object.keys(n.by).forEach((st) => { if (n.by[st] > (o.by[st] || 0)) t("stage_" + slug(st)); });
+      if (n.f > o.f) t("followup_added"); if (n.fd > o.fd) t("followup_done");
+      if (n.e > o.e) t("event_added"); if (n.c > o.c) t("company_added"); if (n.r > o.r) t("resume_added");
+    } catch (e) {}
+  };
+
   window.storage = {
     async get(key) {
       const v = guestOn() ? GM.get(key) : await idbGet(key);
+      if (key === MAIN && hvaPrev === null && v !== undefined) hvaPrev = hvaSum(v);
       if (v === undefined) throw new Error("Key not found: " + key);
       return { key, value: v };
     },
     async set(key, value) {
       const v = String(value);
+      if (key === MAIN) hvaDiff(v);
       if (guestOn()) { GM.set(key, v); guestWrite(key); return { key, value }; }
       await idbPut(key, v);
       if (!localOnly(key)) {

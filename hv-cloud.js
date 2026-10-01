@@ -167,10 +167,12 @@
       if (!auth) await init();
       const p = new window.firebase.auth.GoogleAuthProvider();
       p.setCustomParameters({ prompt: "select_account" });
+      try { if (window.hva) window.hva("event", "signin_start"); } catch (e) {}
       // Popup only. The site (github.io) and the auth helper (firebaseapp.com) are different
       // domains, so signInWithRedirect breaks on phones that partition storage ("missing initial
       // state"). See firebase.google.com/docs/auth/web/redirect-best-practices, option 2.
       await auth.signInWithPopup(p);
+      window.__hvaJustSignedIn = true;          // the app reports sign_in or signup once it knows if the account is new
     },
     async signOut() { if (T) return T.auth.signOut(); if (auth) await auth.signOut(); },
     req, str, num, putValue, getValue, delValue, appCheckToken,

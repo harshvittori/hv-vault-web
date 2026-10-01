@@ -979,8 +979,11 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       const names = items.map((i) => { try { return describe(i.res.action, host.getData && host.getData()).title; } catch (e) { return i.res.action.type; } });
       history.push({ role: "ai", text: "[CANCELLED by the user: " + names.join(", ") + ". This proposal is void. Do not reuse any of its blocks, times or details.]" }); save();
     }
+    // anonymous usage counts (HV analytics): event names only, never what was typed or said
+    const hvaT = (n) => { try { if (window.hva) window.hva("event", n); } catch (e) {} };
     async function execute(batch, items) {
       if (busy) return; busy = true;
+      hvaT("ai_confirm");
       try {
         const res = await host.execute(items.map((i) => i.res.action));
         items.forEach((i) => { i.state = "done"; paint(i, batch); });
@@ -1087,6 +1090,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
     }
     async function run(textIn) {
       const text = (textIn != null ? textIn : input.value).trim();
+      if (text) hvaT("ai_message");
       if (!text || busy) return;
       input.value = ""; grow();
       const c = cfg();
@@ -1156,6 +1160,7 @@ body:has(.kcard.dragging) .hvai-fab,body:has(.kcard-ghost) .hvai-fab{opacity:0;p
       if (speech) { const r = speech; if (r.stopNow) r.stopNow(); try { cancel ? r.abort() : r.stop(); } catch (err) {} }   // onend finishes up
     }
     async function startRec() {
+      hvaT("ai_voice");
       const c = cfg();
       if (!hasAI(c)) { say("ai", host.keyHelp || "Add your AI key in HV Vault > Settings > HV AI first.", false); return; }
       cancelled = false;

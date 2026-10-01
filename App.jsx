@@ -630,6 +630,8 @@ export default function HVVault() {
   const dataRef = useRef(null); dataRef.current = data;
   const aiRef = useRef(null);
   const [page, setPage] = useState("dashboard");
+  // anonymous usage counts (HV analytics, /a.js): which screen was opened, nothing about the data on it
+  useEffect(() => { try { if (IS_WEB() && window.hva) window.hva("event", "view_" + String(page).toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 20)); } catch (e) {} }, [page]);
   const [globalQuery, setGlobalQuery] = useState("");
   const [toast, setToast] = useState(null);
   const [modal, setModal] = useState(null);
@@ -3976,6 +3978,7 @@ function AnalyticsPage({ data, setData, setModal, notify }) {
   const insights = buildInsights(data);
 
   const exportSummary = () => {
+    try { if (window.hva) window.hva("event", "export_summary"); } catch (e) {}
     download("hv-vault-analytics.csv", toCSV(analyticsSummaryRows(data), ["metric", "value"]));
     notify("Analytics summary exported");
   };
@@ -5045,6 +5048,7 @@ function SettingsPage({ data, setData, notify }) {
   const [exportKind, setExportKind] = useState("jobs");
 
   const exportJobs = () => {
+    try { if (window.hva) window.hva("event", "export_jobs"); } catch (e) {}
     const rows = data.jobs.map((j) => ({
       title: j.title, company: data.companies.find((c) => c.id === j.company_id)?.name || "",
       status: j.status, source: j.source, location: j.location, work_mode: j.work_mode,

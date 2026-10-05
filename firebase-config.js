@@ -1,0 +1,2 @@
+/*! HV World · harshvittori.github.io · © 2026 Harsh Goyal. All rights reserved. */
+window.HV_FIREBASE_CONFIG={apiKey:"AIzaSyDggasAVdqpvamkn1xeex2NmPUqG9JiZJ4",authDomain:"harsh-reset.firebaseapp.com",projectId:"harsh-reset",appId:"1:592094409539:web:57d3aa494464b867bbf5f6",appCheckSiteKey:"6LdZltEtAAAAANC5e-PJFqs2YrM1ubR3CKv0sOhl",appCheckProvider:"enterprise"};

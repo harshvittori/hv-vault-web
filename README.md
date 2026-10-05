@@ -1,5 +1,7 @@
 # HV Vault
 
-Part of **HV World** · https://harshvittori.github.io/hv-vault-web/
+A product of **HV World** · https://harshvittori.github.io/hv-vault-web/
 
-This repository is the published website. © 2026 Harsh Goyal. All rights reserved.
+Developed by Harsh Goyal.
+
+© 2026 HV World. All rights reserved.
